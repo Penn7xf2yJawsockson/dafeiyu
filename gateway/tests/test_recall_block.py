@@ -56,6 +56,12 @@ def test_prefix_before_recall_block_is_identical_across_turns(harness: Harness) 
     assert all("第一轮的记忆" not in str(m["content"]) for m in turn2)
 
 
+def test_recall_block_tells_the_model_the_current_local_time(harness: Harness) -> None:
+    harness.chat([{"role": "user", "content": "现在几点了"}])  # 假时钟:2026-10-01 20:00 UTC
+
+    assert "2026-10-02 周五 04:00" in _recall_block(harness.upstream.last)
+
+
 def test_recalled_memory_ids_are_audited(harness: Harness) -> None:
     harness.facts.hits = [MemoryHit("f1", "a"), MemoryHit("f2", "b")]
     harness.affect.hits = [MemoryHit("o7", "c")]

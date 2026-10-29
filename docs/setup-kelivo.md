@@ -21,14 +21,19 @@
 - 手机上 `dafeiyu` 这个名字解析不了时,把它换成 Tailscale 里显示的 `100.x.x.x` 地址。
 - 想用 Claude 类型的供应商也可以:Base URL 同上,不带 `/v1`,网关也提供 `/v1/messages`。
 
-## 3. 助手设置(两台都要)
+## 3. 模型设置(两台都要)
+
+- 供应商里的 `dafeiyu` 模型 → 编辑 → **能力** → 打开 **「工具」**。Kelivo 按模型名猜能力,认不出 `dafeiyu`;不打开就不会把联网搜索、网页抓取等工具发给模型。
+- 设置 → 默认模型 → **标题生成模型**(以及开启了的**聊天建议模型**、**翻译模型**等)选 `dafeiyu-direct`。这些后台请求不该进记忆;网关能识别 Kelivo 的默认提示词作为兜底,但如果你改过这些提示词,只能靠这里的设置。
+
+## 4. 助手设置(两台都要)
 
 - **记忆:关闭**,`chat_search` 工具也关闭。记忆完全由网关负责(Q10)。
-- **系统提示词:留空**。人设和核心档案只在网关保存(`data/gateway/persona.md`、`core_profile.md`)。
+- **系统提示词:留空**。人设和核心档案只在网关保存(`data/gateway/persona.md`、`core_profile.md`)。Kelivo 自动加的技能列表、搜索引用规则会照常保留。
 - **世界书:不用**。关键词条目由网关世界书负责(工单 09)。
 - **流式输出:开启**。
 
-## 4. 自动启动
+## 5. 自动启动
 
 `deploy/windows/install-autostart.ps1` 已经注册了 Windows 计划任务 `dafeiyu-autostart`。**登录 Windows 后**,它会在后台(不弹窗)启动 WSL、Docker 和全部服务,并让 WSL 一直开着,不会因为空闲被关掉。
 
@@ -36,7 +41,7 @@
 - Windows 自动更新重启后也一样:登录之后才会恢复。
 - 启动日志在 WSL 的 `/var/log/dafeiyu-keepalive.log`(属于 root,用 `sudo cat` 查看)。
 
-## 5. 检查是否连通
+## 6. 检查是否连通
 
 - 电脑浏览器打开 `http://127.0.0.1:18080/v1/models`。显示 `unknown gateway token`,说明网关在运行;这是正常的,因为浏览器没带 Token。
 - 手机开着 Tailscale,用浏览器打开 `http://dafeiyu:8080/v1/models`,应该看到同样的提示。

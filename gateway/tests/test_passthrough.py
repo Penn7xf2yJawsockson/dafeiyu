@@ -21,16 +21,27 @@ def test_reply_is_returned_from_upstream(harness: Harness) -> None:
     assert resp.json()["choices"][0]["message"]["content"] == "晚上好呀"
 
 
-def test_kelivo_system_prompt_is_replaced_by_persona_and_core_profile(harness: Harness) -> None:
+def test_kelivo_system_messages_are_kept_after_persona_and_core_profile(harness: Harness) -> None:
+    """Kelivo 把技能、引用规则放在 system 消息里;人设和核心档案仍在最前面,保证缓存前缀稳定。"""
     harness.chat([
-        {"role": "system", "content": "Kelivo 里残留的提示词"},
+        {"role": "system", "content": "<available_skills>visualize</available_skills>"},
         {"role": "user", "content": "你是谁"},
     ])
 
     sent = harness.upstream.last
     assert sent["model"] == "deepseek-flash"
     assert sent["messages"][0] == {"role": "system", "content": "你是大肥鱼。\n\n用户生日:3月14日。"}
-    assert all("残留" not in str(m["content"]) for m in sent["messages"])
+    assert sent["messages"][1] == {"role": "system", "content": "<available_skills>visualize</available_skills>"}
+
+
+def test_empty_persona_sends_no_empty_system_message(harness: Harness) -> None:
+    (harness.data_dir / "persona.md").unlink()
+    (harness.data_dir / "core_profile.md").unlink()
+
+    harness.chat([{"role": "user", "content": "你好"}])
+
+    assert all(m["content"] for m in harness.upstream.last["messages"] if m["role"] == "system")
+    assert harness.upstream.last["messages"][0]["content"].startswith("<memory>")
 
 
 def _stream_text(resp_text: str) -> str:
@@ -101,7 +112,7 @@ def test_model_list_lets_kelivo_add_the_companion_as_a_model(harness: Harness) -
     resp = harness.client.get("/v1/models", headers={"Authorization": "Bearer tok-pc"})
 
     assert resp.status_code == 200
-    assert [m["id"] for m in resp.json()["data"]] == ["dafeiyu"]
+    assert "dafeiyu" in [m["id"] for m in resp.json()["data"]]
     assert harness.client.get("/v1/models", headers={"Authorization": "Bearer tok-stranger"}).status_code == 401
 
 

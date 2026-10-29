@@ -18,6 +18,7 @@ class Settings:
     # 面板与管理接口的 Token;为空时管理接口全部拒绝
     admin_token: str = ""
     companion: str = "dafeiyu"
+    timezone: str = "Asia/Shanghai"   # 召回块里"现在是几点"用的时区
     recall_timeout_seconds: float = 3.0
     episode_idle_minutes: float = 30.0
     episode_max_turns: int = 20

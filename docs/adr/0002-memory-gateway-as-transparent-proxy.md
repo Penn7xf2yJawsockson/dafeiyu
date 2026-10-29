@@ -10,4 +10,6 @@ Kelivo 没有请求前后 hook、没有 tool_choice、没有预置消息,经 MCP
 ## Consequences
 
 - 两个记忆库的 MCP 不挂在 Kelivo 上,模型不直接操作记忆库。
+- 更新(2026-10-29,实测抓包后):Kelivo 把技能列表、搜索引用规则放在 system 消息里,把工具定义放在 `tools` 字段里。网关保留 Kelivo 的 system 消息,放在人设和核心档案之后;人设仍只在网关保存,Kelivo 端系统提示词留空。
+- Kelivo 的后台请求(生成标题、聊天建议、总结、压缩上下文、OCR、翻译)按默认提示词识别,只原样转发,不召回、不记录;另提供无记忆直通模型 `dafeiyu-direct`,供这些后台任务和其他客户端使用。
 - DeepSeek 的 Anthropic 兼容端点忽略 `cache_control`,走 B 入口时不能主动控制缓存,只依赖 DeepSeek 的自动前缀缓存。

@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from gateway.stores import MemoryHit
 
@@ -48,7 +50,16 @@ _SECTIONS = (
 )
 
 
-def render_recall_block(recall: Recall) -> str:
+_WEEKDAYS = "一二三四五六日"
+
+
+def local_time_line(now: datetime, tz: str) -> str:
+    """模型不知道今天几号;这一行放在召回块里(每轮本来就变),不影响缓存前缀。"""
+    local = now.astimezone(ZoneInfo(tz))
+    return f"现在是 {local:%Y-%m-%d} 周{_WEEKDAYS[local.weekday()]} {local:%H:%M}。"
+
+
+def render_recall_block(recall: Recall, time_line: str = "") -> str:
     parts: list[str] = []
     for source, title, ordered in _SECTIONS:
         hits: list[MemoryHit] = getattr(recall, source)
@@ -56,7 +67,8 @@ def render_recall_block(recall: Recall) -> str:
             shown = hits if ordered else sorted(hits, key=lambda h: h.id)
             parts.append(f"## {title}\n" + "\n".join(f"- {h.text}" for h in shown))
     body = "\n\n".join(parts) if parts else PLACEHOLDER
-    return f"<memory>\n{USAGE_RULES}\n\n{body}\n</memory>"
+    head = f"{time_line}\n{USAGE_RULES}" if time_line else USAGE_RULES
+    return f"<memory>\n{head}\n\n{body}\n</memory>"
 
 
 def _strip(message: dict[str, Any], notice: str) -> dict[str, Any]:
@@ -80,17 +92,16 @@ def turn_start(history: list[dict[str, Any]]) -> int | None:
     return None
 
 
-def compose(system: str, history: list[dict[str, Any]], block: str, start: int,
+def compose(system: str, client_system: str, history: list[dict[str, Any]], block: str, start: int,
             notice: str = "") -> list[dict[str, Any]]:
-    """召回块插在本轮开始的那条用户消息之前(ADR-0003 的深度 1)。
+    """[人设+核心档案][客户端的系统消息][历史…][召回块][本轮用户消息][工具回合…]
 
-    带工具的一轮,后续请求里召回块仍在同一位置、内容不变:工具结果紧跟着工具调用(协议要求),
-    缓存前缀也不动。notice 是降级标记,只给用户看,从历史里去掉后再发上游。
+    - 人设和核心档案在最前面:很少变化,缓存前缀最稳。
+    - 客户端(Kelivo)的系统消息紧随其后:技能、搜索引用规则等,只有切换功能时才变。
+    - 召回块插在本轮开始的那条用户消息之前(ADR-0003 的深度 1);带工具的一轮,后续请求里
+      召回块仍在同一位置、内容不变,工具结果紧跟工具调用(协议要求),缓存前缀也不动。
+    - notice 是降级标记,只给用户看,从历史里去掉后再发上游。空的系统消息不发。
     """
     cleaned = [_strip(m, notice) for m in history]
-    return [
-        {"role": "system", "content": system},
-        *cleaned[:start],
-        {"role": "system", "content": block},
-        *cleaned[start:],
-    ]
+    head = [{"role": "system", "content": text} for text in (system, client_system) if text]
+    return [*head, *cleaned[:start], {"role": "system", "content": block}, *cleaned[start:]]

@@ -18,7 +18,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from gateway import anthropic
 from gateway import upstream as up
-from gateway.compose import compose, render_recall_block, turn_start
+from gateway.background import is_background
+from gateway.compose import compose, local_time_line, render_recall_block, turn_start
 from gateway.config import Settings
 from gateway.lifecycle import Lifecycle, context_hash, message_text
 from gateway.recall import recall
@@ -69,6 +70,7 @@ def create_app(
     log = TranscriptLog(settings.data_dir / "transcript.sqlite3")
     life = Lifecycle(settings, log, fact_store, affect_store, notice=DEGRADED_NOTICE)
     drain_lock = asyncio.Lock()
+    direct_model = f"{settings.companion}-direct"  # 无记忆直通:给标题生成、酒馆、Agent 等用
     client = httpx.AsyncClient(
         base_url=settings.upstream_base_url,
         transport=upstream_transport,
@@ -119,8 +121,12 @@ def create_app(
         从 resolve_previous 到 open_turn 之间没有 await,在单线程事件循环里天然不会与
         其他请求或后台扫描交错;改动这一段时不要在中间插入 await。
         """
+        if body.get("model") == direct_model or is_background(body):
+            return await passthrough(body, incoming)
         started = time.monotonic()
         history = [m for m in body.get("messages") or [] if m.get("role") != "system"]
+        client_system = "\n\n".join(text for m in body.get("messages") or []
+                                     if m.get("role") == "system" and (text := message_text(m.get("content"))))
         start = turn_start(history)
         if start is None:
             return up.UpstreamError(400, {"error": {"message": "messages must contain a user message"}})
@@ -143,12 +149,13 @@ def create_app(
             recalled = await recall(query=turn.user_text, facts=fact_store, affect=affect_store,
                                     timeout=settings.recall_timeout_seconds, surface=first_turn, lore=[],
                                     handoff=handoff)
-            block, reasons, memory_ids = render_recall_block(recalled), recalled.degraded_reasons, recalled.memory_ids()
+            block = render_recall_block(recalled, local_time_line(now, settings.timezone))
+            reasons, memory_ids = recalled.degraded_reasons, recalled.memory_ids()
             log.save_recall(turn.id, block, reasons, memory_ids)
 
         system = "\n\n".join(p for p in (_read(settings, "persona.md"), _read(settings, "core_profile.md")) if p)
         payload = {**body, "model": settings.upstream_model,
-                   "messages": compose(system, history, block, start, DEGRADED_NOTICE)}
+                   "messages": compose(system, client_system, history, block, start, DEGRADED_NOTICE)}
         notice = DEGRADED_NOTICE if reasons else ""
         capture(incoming or {"body": body}, payload)
 
@@ -184,6 +191,21 @@ def create_app(
             message["content"] = (message.get("content") or "") + notice
         return raw
 
+    async def passthrough(body: dict[str, Any], incoming: dict[str, Any] | None) -> TurnResult:
+        """无记忆直通:Kelivo 的后台任务,或客户端选了直通模型。原样转发,不召回、不记录、不进记忆。"""
+        payload = {**body, "model": settings.upstream_model}
+        capture(incoming or {"body": body}, payload)
+        if body.get("stream"):
+            opened = await up.open_stream(client, payload)
+            if isinstance(opened, up.UpstreamError):
+                return opened
+
+            async def ignore(_text: str, _ok: bool, _tools: list[str]) -> None:
+                return None
+            return up.relay_stream(opened, ignore)
+        result = await up.complete(client, payload)
+        return result if isinstance(result, up.UpstreamError) else result[1]
+
     def capture(incoming: dict[str, Any], outgoing: dict[str, Any]) -> None:
         """抓包开关(GATEWAY_DEBUG_CAPTURE=N):保留最近 N 次的原始请求与发给上游的请求,用于排查。
         只写本机 data/ 下(不进 git);不含任何 Token 或密钥。"""
@@ -215,7 +237,8 @@ def create_app(
         """Kelivo 添加供应商时会拉模型列表;对它来说,陪伴角色就是唯一的"模型"。"""
         if settings.devices.get(_bearer(request) or request.headers.get("x-api-key", "")) is None:
             return _unauthorized()
-        return {"object": "list", "data": [{"id": settings.companion, "object": "model", "owned_by": "dafeiyu"}]}
+        return {"object": "list", "data": [{"id": m, "object": "model", "owned_by": "dafeiyu"}
+                                           for m in (settings.companion, direct_model)]}
 
     @app.post("/v1/messages")
     async def messages(request: Request) -> Any:
