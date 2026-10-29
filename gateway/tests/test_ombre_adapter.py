@@ -39,18 +39,24 @@ NOTHING = "没有匹配到「你还记得我下周有什么安排吗」相关的
 def test_search_result_ids_come_from_the_id_block() -> None:
     [hit] = parse_ombre_result(SEARCH)
     assert hit.id == "9fc1d4b0958a"
-    assert "醒一醒宝宝" in hit.text and "ombre:result-ids" not in hit.text
+    assert hit.text == "用户在夜里把我叫醒,原话是「醒一醒宝宝,我要给你新任务啦」。"
 
 
 def test_surface_without_id_block_falls_back_to_bucket_markers() -> None:
-    [hit] = parse_ombre_result(SURFACE)
-    assert hit.id == "9fc1d4b0958a,885bdabbbd32"  # 关系行里的 5511b532c48d 不是本次返回的桶
-    assert "醒一醒宝宝" in hit.text and "卡点表" in hit.text
+    hits = parse_ombre_result(SURFACE)
+    assert [h.id for h in hits] == ["9fc1d4b0958a", "885bdabbbd32"]  # 关系行里的 5511b532c48d 不是本次返回的桶
+
+
+def test_each_memory_keeps_only_its_own_text() -> None:
+    """标题、权重、bucket_id、关系行、来源脚注、分隔线是给工具调用方看的,不进召回块。"""
+    assert [h.text for h in parse_ombre_result(SURFACE)] == [
+        "用户在夜里把我叫醒,原话是「醒一醒宝宝,我要给你新任务啦」。",
+        "我列了一张按命中率排序的卡点表。",
+    ]
 
 
 def test_surface_drops_the_budget_note_meant_for_tool_callers() -> None:
-    [hit] = parse_ombre_result(SURFACE)
-    assert "token 预算不足" not in hit.text and "提高 max_tokens" not in hit.text
+    assert all("token 预算不足" not in h.text for h in parse_ombre_result(SURFACE))
 
 
 def test_no_memories_is_empty() -> None:
@@ -68,4 +74,4 @@ async def test_surface_uses_an_800_token_budget() -> None:
     hits = await OmbreStore("http://o/mcp", transport=httpx.MockTransport(handler)).surface()
 
     assert sent == [{"name": "breath_advanced", "arguments": {"max_tokens": 800, "with_ids": True}}]
-    assert hits[0].id == "9fc1d4b0958a,885bdabbbd32"
+    assert [h.id for h in hits] == ["9fc1d4b0958a", "885bdabbbd32"]

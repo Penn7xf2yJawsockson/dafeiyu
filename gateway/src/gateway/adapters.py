@@ -69,26 +69,35 @@ def _bank_not_found(resp: httpx.Response) -> bool:
 
 
 _IDS_BLOCK = re.compile(r"=== ombre:result-ids ===\s*```json\s*(\{.*?\})\s*```", re.S)
-_BUCKET_MARKER = re.compile(r"\[bucket_id:([0-9a-f]+)\]")
+# 每个桶以一行 `[权重:…] [bucket_id:…]`(浮现)或 `[bucket_id:…]`(检索)开头
+_BUCKET_HEAD = re.compile(r"^(?:\[[^\]\n]*\]\s*)*\[bucket_id:([0-9a-f]+)\][^\n]*$", re.M)
+# 给工具调用方看的元数据行:关系、来源脚注、分隔线、区块标题
+_META_LINE = re.compile(r"^\s*(?:↳ .*|👣 .*|-{3,}|=== .* ===)\s*$")
 # 浮现放不下时 Ombre 附的提示是写给工具调用方的(「请提高 max_tokens 后重试」),不进召回块
 _BUDGET_NOTE = re.compile(r"\n*token 预算不足[:：].*$", re.S)
 
 
 def parse_ombre_result(text: str) -> list[MemoryHit]:
-    """Ombre 3.6 的返回:人类可读正文,带查询时末尾另附机器可读的 ID 块。
+    """Ombre 3.6 的返回 → 每个桶一条记忆,只保留桶的正文。
 
-    不带查询的浮现不附 ID 块,ID 只在正文每个桶开头的 `[bucket_id:…]` 里,这时从正文取。
-    正文无法可靠地按桶切开,所以整段正文作为一条记忆返回,ID 用逗号连接进审计。
+    带查询的检索末尾附机器可读的 ID 块;不带查询的浮现不附,ID 只在每个桶开头那行的
+    `[bucket_id:…]` 里。两种都按桶开头那行切开;有 ID 块时只保留块里列出的桶。
     """
     match = _IDS_BLOCK.search(text)
+    listed: list[str] | None = None
     if match is not None:
-        ids: list[str] = json.loads(match.group(1)).get("bucket_ids", [])
-        body = text[: match.start()].strip()
-    else:
-        ids = list(dict.fromkeys(_BUCKET_MARKER.findall(text)))
-        body = text.strip()
-    body = _BUDGET_NOTE.sub("", body).strip()
-    return [MemoryHit(",".join(ids), body)] if ids and body else []
+        listed = json.loads(match.group(1)).get("bucket_ids", [])
+        text = text[: match.start()]
+    text = _BUDGET_NOTE.sub("", text)
+    heads = list(_BUCKET_HEAD.finditer(text))
+    hits: list[MemoryHit] = []
+    for i, head in enumerate(heads):
+        bucket_id = head.group(1)
+        chunk = text[head.end(): heads[i + 1].start() if i + 1 < len(heads) else len(text)]
+        body = "\n".join(line for line in chunk.splitlines() if not _META_LINE.match(line)).strip()
+        if body and (listed is None or bucket_id in listed) and all(h.id != bucket_id for h in hits):
+            hits.append(MemoryHit(bucket_id, body))
+    return hits
 
 
 class OmbreStore:

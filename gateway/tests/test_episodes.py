@@ -82,3 +82,16 @@ def test_affect_surfacing_happens_only_on_first_turn_of_episode(harness: Harness
 
     assert "面试的结果还没出来" in first
     assert "面试的结果还没出来" not in second
+
+
+def test_a_memory_already_surfaced_is_not_listed_again_under_affect(harness: Harness) -> None:
+    """同一个桶既被段首浮现、又被这一轮检索命中时,只在「心里还挂着的事」里出现一次。"""
+    harness.affect.surfaced = [MemoryHit("o1", "上周面试的结果还没出来")]
+    harness.affect.hits = [MemoryHit("o1", "上周面试的结果还没出来"), MemoryHit("o2", "用户喜欢猫")]
+
+    harness.chat(_conversation(1))
+    block = harness.upstream.last["messages"][-2]["content"]
+
+    assert block.count("上周面试的结果还没出来") == 1
+    assert "用户喜欢猫" in block
+    assert harness.audit()[-1]["memory_ids"].count("affect:o1") == 0

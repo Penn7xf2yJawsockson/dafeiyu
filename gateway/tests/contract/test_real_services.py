@@ -84,7 +84,8 @@ async def test_ombre_search_returns_parseable_ids_after_grow() -> None:
 
     hits = await store.recall(f"面试{marker}")
 
-    assert hits and hits[0].id and marker in hits[0].text
+    assert hits and all(len(h.id) == 12 for h in hits) and any(marker in h.text for h in hits)
+    assert not any("bucket_id" in h.text or "ombre:result-ids" in h.text for h in hits)
 
 
 @needs_ombre
@@ -94,10 +95,11 @@ async def test_ombre_surface_without_query_returns_parseable_ids() -> None:
     marker = uuid.uuid4().hex[:8]
     await store.write_episode("contract", f"用户:下个月要搬家去{marker}小区,有点舍不得现在的房子\n大肥鱼:我陪你一起收拾")
 
-    [hit] = await store.surface()
+    hits = await store.surface()
 
-    assert hit.id and all(len(i) == 12 for i in hit.id.split(","))
-    assert "ombre:result-ids" not in hit.text and "提高 max_tokens" not in hit.text
+    assert hits and all(len(h.id) == 12 for h in hits)
+    for h in hits:  # 只剩桶的正文,没有给工具调用方看的元数据
+        assert not any(m in h.text for m in ("bucket_id", "权重:", "👣", "↳", "=== ", "提高 max_tokens"))
 
 
 @needs_ombre
@@ -109,9 +111,9 @@ async def test_ombre_retried_grow_with_same_content_does_not_duplicate() -> None
     await store.write_episode("contract", transcript)
     await store.write_episode("contract", transcript)
 
-    [hit] = await store.recall(f"{marker}公园")
+    hits = await store.recall(f"{marker}公园")
 
-    assert len(hit.id.split(",")) == 1
+    assert len([h for h in hits if marker in h.text]) == 1
 
 
 @needs_ombre
