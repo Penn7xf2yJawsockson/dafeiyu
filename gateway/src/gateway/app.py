@@ -1,0 +1,185 @@
+"""网关 HTTP 入口。"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import time
+from collections.abc import AsyncIterator
+from datetime import datetime
+from typing import Any, Protocol
+
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from gateway import anthropic
+from gateway import upstream as up
+from gateway.compose import compose
+from gateway.config import Settings
+from gateway.lifecycle import Lifecycle, context_hash, message_text
+from gateway.recall import recall
+from gateway.stores import MemoryStore
+from gateway.transcript import FAILED, TranscriptLog
+
+DEGRADED_NOTICE = "\n\n⚠ 记忆不完整"
+
+TurnResult = up.UpstreamError | dict[str, Any] | AsyncIterator[bytes]
+"""失败 / 非流式的完整回复 / 流式的 OpenAI SSE 字节流。"""
+
+
+class Clock(Protocol):
+    def now(self) -> datetime: ...
+
+
+def _read(settings: Settings, name: str) -> str:
+    path = settings.data_dir / name
+    return path.read_text(encoding="utf-8").strip() if path.exists() else ""
+
+
+def _bearer(request: Request) -> str:
+    return request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+
+
+def _unauthorized() -> JSONResponse:
+    return JSONResponse({"error": {"message": "unknown gateway token"}}, status_code=401)
+
+
+def create_app(
+    settings: Settings,
+    *,
+    upstream_transport: httpx.AsyncBaseTransport | None = None,
+    fact_store: MemoryStore,
+    affect_store: MemoryStore,
+    clock: Clock,
+) -> FastAPI:
+    log = TranscriptLog(settings.data_dir / "transcript.sqlite3")
+    life = Lifecycle(settings, log, fact_store, affect_store, notice=DEGRADED_NOTICE)
+    drain_lock = asyncio.Lock()
+    client = httpx.AsyncClient(
+        base_url=settings.upstream_base_url,
+        transport=upstream_transport,
+        timeout=settings.upstream_timeout_seconds,
+        headers={"Authorization": f"Bearer {settings.upstream_api_key}"},
+    )
+
+    async def tick() -> None:
+        async with drain_lock:
+            life.sweep_idle(clock.now())
+            await life.drain()
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        task: asyncio.Task[None] | None = None
+        if settings.background_worker:
+            async def loop() -> None:
+                while True:
+                    with contextlib.suppress(Exception):
+                        await tick()
+                    await asyncio.sleep(settings.background_interval_seconds)
+            task = asyncio.create_task(loop())
+        yield
+        if task:
+            task.cancel()
+        await client.aclose()
+
+    app = FastAPI(title="dafeiyu-gateway", lifespan=lifespan)
+
+    async def run_turn(device: str, body: dict[str, Any]) -> TurnResult:
+        """一轮的完整处理。body 是 OpenAI Chat Completions 格式。"""
+        started = time.monotonic()
+        history = [m for m in body["messages"] if m.get("role") != "system"]
+        companion, now = settings.companion, clock.now()
+
+        life.resolve_previous(device, companion, history)
+        episode_id, first_turn = life.episode_for(device, companion, now)
+        turn = log.open_turn(device=device, companion=companion, episode_id=episode_id, created_at=now,
+                             context_hash=context_hash(history[:-1], DEGRADED_NOTICE),
+                             user_text=message_text(history[-1].get("content")))
+
+        recalled = await recall(query=turn.user_text, facts=fact_store, affect=affect_store,
+                                timeout=settings.recall_timeout_seconds, surface=first_turn, lore=[],
+                                handoff=life.handoff(device, companion, now) if first_turn else [])
+        system = "\n\n".join(p for p in (_read(settings, "persona.md"), _read(settings, "core_profile.md")) if p)
+        payload = {**body, "model": settings.upstream_model,
+                   "messages": compose(system, history, recalled, DEGRADED_NOTICE)}
+        notice = DEGRADED_NOTICE if recalled.degraded_sources else ""
+
+        async def finish(text: str, ok: bool) -> None:
+            log.complete_turn(turn.id, text)
+            if not ok:
+                log.set_status(turn.id, FAILED)
+            log.record_audit(turn_id=turn.id, device=device, created_at=clock.now(),
+                             outcome="ok" if ok else "failed", upstream=settings.upstream_base_url,
+                             degraded_sources=recalled.degraded_sources, memory_ids=recalled.memory_ids(),
+                             latency_ms=int((time.monotonic() - started) * 1000))
+            if settings.background_worker:
+                asyncio.create_task(tick())
+
+        if body.get("stream"):
+            opened = await up.open_stream(client, payload)
+            if isinstance(opened, up.UpstreamError):
+                await finish("", False)
+                return opened
+            return up.relay_stream(opened, finish, notice)
+
+        result = await up.complete(client, payload)
+        if isinstance(result, up.UpstreamError):
+            await finish("", False)
+            return result
+        text, raw = result
+        await finish(text, True)
+        if notice:
+            message = raw["choices"][0]["message"]
+            message["content"] = (message.get("content") or "") + notice
+        return raw
+
+    @app.post("/v1/chat/completions")
+    async def chat_completions(request: Request) -> Any:
+        device = settings.devices.get(_bearer(request))
+        if device is None:
+            return _unauthorized()
+        result = await run_turn(device, await request.json())
+        if isinstance(result, up.UpstreamError):
+            return JSONResponse(result.body, status_code=result.status_code)
+        if isinstance(result, dict):
+            return JSONResponse(result)
+        return StreamingResponse(result, media_type="text/event-stream")
+
+    @app.post("/v1/messages")
+    async def messages(request: Request) -> Any:
+        device = settings.devices.get(request.headers.get("x-api-key", "") or _bearer(request))
+        if device is None:
+            return JSONResponse(anthropic.error(401, {"error": {"message": "unknown gateway token"}}), status_code=401)
+        body = await request.json()
+        model = body.get("model", settings.companion)
+        result = await run_turn(device, anthropic.to_openai(body))
+        if isinstance(result, up.UpstreamError):
+            return JSONResponse(anthropic.error(result.status_code, result.body), status_code=result.status_code)
+        if isinstance(result, dict):
+            return JSONResponse(anthropic.from_openai(result, model))
+        return StreamingResponse(anthropic.stream_from_openai(result, model), media_type="text/event-stream")
+
+    def _admin(request: Request) -> bool:
+        return bool(settings.admin_token) and _bearer(request) == settings.admin_token
+
+    @app.post("/admin/tick")
+    async def admin_tick(request: Request) -> Any:
+        if not _admin(request):
+            return _unauthorized()
+        await tick()
+        return {"ok": True}
+
+    @app.get("/admin/turns")
+    async def admin_turns(request: Request) -> Any:
+        if not _admin(request):
+            return _unauthorized()
+        return {"turns": [{**t.__dict__, "created_at": t.created_at.isoformat()} for t in log.turns()]}
+
+    @app.get("/admin/audit")
+    async def admin_audit(request: Request) -> Any:
+        if not _admin(request):
+            return _unauthorized()
+        return {"entries": log.audit_entries()}
+
+    return app
