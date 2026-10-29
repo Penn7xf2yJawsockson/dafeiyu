@@ -1,8 +1,10 @@
 """工单 07:记忆库故障或召回超时 → 降级轮:照常回答、可见标记、审计记录、核心档案照常注入。"""
 
 import json
+import sqlite3
+from pathlib import Path
 
-from conftest import Harness
+from conftest import ADMIN, FakeClock, FakeStore, FakeUpstream, Harness, _client
 
 from gateway.stores import MemoryHit
 
@@ -39,6 +41,34 @@ def test_streaming_degraded_turn_shows_notice_before_finish(harness: Harness) ->
     finish_index = next(i for i, c in enumerate(chunks) if c["choices"][0]["finish_reason"])
     assert any(NOTICE in t for t in texts[:finish_index])
     assert "".join(texts).startswith("嗯嗯")
+
+
+def test_degraded_turn_records_why_each_source_failed(harness: Harness) -> None:
+    harness.affect.fail = True
+    harness.facts.hang_seconds = 1.0
+
+    harness.chat([{"role": "user", "content": "在吗"}])
+
+    reasons = harness.audit()[-1]["degraded_reasons"]
+    assert "记忆库不可用" in reasons["affect"]
+    assert "timeout" in reasons["facts"]
+
+
+def test_audit_from_an_older_database_schema_still_works(tmp_path: Path) -> None:
+    db = sqlite3.connect(tmp_path / "transcript.sqlite3")
+    db.execute("CREATE TABLE audit (seq INTEGER PRIMARY KEY AUTOINCREMENT, turn_id TEXT NOT NULL, device TEXT NOT"
+               " NULL, created_at TEXT NOT NULL, outcome TEXT NOT NULL, upstream TEXT NOT NULL, degraded_sources TEXT"
+               " NOT NULL, memory_ids TEXT NOT NULL, latency_ms INTEGER NOT NULL)")
+    db.close()
+    (tmp_path / "persona.md").write_text("你是大肥鱼。", encoding="utf-8")
+
+    with _client(tmp_path, FakeUpstream(), FakeStore(fail=True), FakeStore(), FakeClock()) as client:
+        resp = client.post("/v1/chat/completions", json={"model": "x", "messages": [{"role": "user", "content": "嗨"}]},
+                           headers={"Authorization": "Bearer tok-pc"})
+        entries = client.get("/admin/audit", headers=ADMIN).json()["entries"]
+
+    assert resp.status_code == 200
+    assert "facts" in entries[-1]["degraded_reasons"]
 
 
 def test_notice_is_stripped_from_multipart_assistant_content(harness: Harness) -> None:

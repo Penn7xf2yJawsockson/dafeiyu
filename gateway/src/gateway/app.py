@@ -135,7 +135,7 @@ def create_app(
                     life.restore(superseded)
             log.record_audit(turn_id=turn.id, device=device, created_at=clock.now(),
                              outcome="ok" if ok else "failed", upstream=settings.upstream_base_url,
-                             degraded_sources=recalled.degraded_sources, memory_ids=recalled.memory_ids(),
+                             degraded_reasons=recalled.degraded_reasons, memory_ids=recalled.memory_ids(),
                              latency_ms=int((time.monotonic() - started) * 1000))
 
         if body.get("stream"):

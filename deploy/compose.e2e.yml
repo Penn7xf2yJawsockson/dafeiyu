@@ -15,7 +15,9 @@ services:
   gateway-e2e:
     extends: { file: compose.yml, service: gateway }
     profiles: ["e2e"]
-    depends_on: !override [hindsight, ombre-e2e]
+    depends_on: !override
+      hindsight: { condition: service_healthy }
+      ombre-e2e: { condition: service_healthy }
     ports: !override
       - "127.0.0.1:18081:8080"
     environment:

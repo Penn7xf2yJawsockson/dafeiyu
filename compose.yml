@@ -6,7 +6,10 @@ services:
   gateway:
     build: ./gateway
     restart: unless-stopped
-    depends_on: [hindsight, ombre]
+    # 两个记忆库健康后才启动网关,避免开机后头几轮因记忆库还没起来而被标成降级
+    depends_on:
+      hindsight: { condition: service_healthy }
+      ombre: { condition: service_healthy }
     ports:
       - "127.0.0.1:${GATEWAY_HOST_PORT:-18080}:8080"
     environment:
@@ -26,6 +29,12 @@ services:
   hindsight:
     image: ghcr.io/vectorize-io/hindsight:${HINDSIGHT_VERSION:-1.1.0}
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8888/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
     environment:
       HINDSIGHT_API_TENANT_EXTENSION: hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
       HINDSIGHT_API_TENANT_API_KEY: ${HINDSIGHT_API_KEY:?}
@@ -48,6 +57,12 @@ services:
   ombre:
     image: p0luz/ombre-brain:${OMBRE_VERSION:-3.6.14}
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
     environment:
       OMBRE_TRANSPORT: streamable-http
       OMBRE_MCP_AUTH_MODE: token

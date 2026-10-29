@@ -65,7 +65,14 @@ ids = last["memory_ids"]
 assert isinstance(ids, list)
 print("\n轮状态:", [t["status"] for t in turns])
 print("手机这一轮注入的记忆来源:", sorted({i.split(":")[0] for i in ids}))
-print("降级来源:", last["degraded_sources"])
-ok = "团子" in r3
-print("\n结果:", "✅ 换到手机后想起了团子" if ok else "❌ 没想起团子")
-sys.exit(0 if ok else 1)
+degraded = []
+for n, entry in enumerate(audit, 1):
+    assert isinstance(entry, dict)
+    reasons = entry["degraded_reasons"]
+    print(f"第{n}轮 {entry['device']:5s} {entry['latency_ms']:5d}ms 降级:", reasons or "无")
+    if reasons:
+        degraded.append(n)
+remembered = "团子" in r3
+print("\n结果:", "✅ 换到手机后想起了团子" if remembered else "❌ 没想起团子",
+      "|", "✅ 没有降级轮" if not degraded else f"❌ 第 {degraded} 轮降级")
+sys.exit(0 if remembered and not degraded else 1)

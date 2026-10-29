@@ -26,7 +26,12 @@ class Recall:
     facts: list[MemoryHit] = field(default_factory=list)
     surfaced: list[MemoryHit] = field(default_factory=list)
     affect: list[MemoryHit] = field(default_factory=list)
-    degraded_sources: list[str] = field(default_factory=list)
+    degraded_reasons: dict[str, str] = field(default_factory=dict)
+    """降级的来源 → 原因(超时或报错)。为空表示本轮没有降级。"""
+
+    @property
+    def degraded_sources(self) -> list[str]:
+        return sorted(self.degraded_reasons)
 
     def memory_ids(self) -> list[str]:
         return [f"{source}:{hit.id}" for source, _title, _ordered in _SECTIONS for hit in getattr(self, source)]

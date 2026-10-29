@@ -14,7 +14,9 @@ services:
   contract:
     image: python:3.12-slim
     profiles: ["contract"]
-    depends_on: [hindsight, ombre-contract]
+    depends_on:
+      hindsight: { condition: service_healthy }
+      ombre-contract: { condition: service_healthy }
     working_dir: /src/gateway
     volumes:
       - ./gateway:/src/gateway

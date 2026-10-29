@@ -46,6 +46,25 @@ async def test_hindsight_recalls_chinese_fact_through_siliconflow_reranker() -> 
 
 
 @needs_hindsight
+async def test_hindsight_recall_on_a_brand_new_bank_is_empty_not_an_error() -> None:
+    """全新部署时 bank 还不存在(第一次 retain 才会建),这不能让前几轮被标成降级。"""
+    store = HindsightStore(HINDSIGHT_URL, f"contract-empty-{uuid.uuid4().hex[:8]}",
+                           api_key=os.environ.get("HINDSIGHT_API_KEY", ""))
+
+    assert await store.recall("随便问点什么") == []
+
+
+@needs_hindsight
+async def test_hindsight_wrong_endpoint_is_still_an_error() -> None:
+    """只有「bank 不存在」算空;其他 404/405 仍要报错,不能把配置错误静默成"没有记忆"。"""
+    store = HindsightStore(HINDSIGHT_URL + "/wrong-prefix", "contract-test",
+                           api_key=os.environ.get("HINDSIGHT_API_KEY", ""))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await store.recall("随便问点什么")
+
+
+@needs_hindsight
 async def test_hindsight_rewrite_with_same_document_replaces_old_facts() -> None:
     store, doc = _hindsight(), f"contract-{uuid.uuid4().hex}"
     await store.write_episode(doc, "用户:我的生日是三月十四日")

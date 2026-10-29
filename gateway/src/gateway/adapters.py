@@ -25,6 +25,8 @@ class HindsightStore:
 
     async def recall(self, query: str) -> list[MemoryHit]:
         resp = await self._http.post(f"{self._path}/recall", json={"query": query, "max_tokens": self._max_tokens})
+        if _bank_not_found(resp):
+            return []  # 全新部署时 bank 要等第一次 retain 才建出来,这时就是"还没有记忆",不是故障
         resp.raise_for_status()
         return [MemoryHit(r["id"], r["text"]) for r in resp.json()["results"]]
 
@@ -37,6 +39,18 @@ class HindsightStore:
         item = {"content": transcript, "document_id": episode_id, "context": "与陪伴角色大肥鱼的日常对话"}
         resp = await self._http.post(self._path, json={"items": [item], "async": False})
         resp.raise_for_status()
+
+
+def _bank_not_found(resp: httpx.Response) -> bool:
+    """Hindsight 1.1:不存在的 bank 返回 404 {"detail": "Bank '<id>' not found"}。
+    只认这一种 404,其他 404(路径写错等)仍按错误处理,免得把配置错误静默成"没有记忆"。"""
+    if resp.status_code != 404:
+        return False
+    try:
+        detail = resp.json().get("detail", "")
+    except ValueError:
+        return False
+    return isinstance(detail, str) and detail.startswith("Bank '") and detail.endswith("' not found")
 
 
 _IDS_BLOCK = re.compile(r"=== ombre:result-ids ===\s*```json\s*(\{.*?\})\s*```", re.S)

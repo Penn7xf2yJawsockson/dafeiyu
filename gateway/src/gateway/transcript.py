@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS audit (
     outcome TEXT NOT NULL,
     upstream TEXT NOT NULL,
     degraded_sources TEXT NOT NULL,
+    degraded_reasons TEXT NOT NULL DEFAULT '{}',
     memory_ids TEXT NOT NULL,
     latency_ms INTEGER NOT NULL
 );
@@ -79,6 +80,13 @@ class TranscriptLog:
         self._lock = threading.Lock()
         with self._lock:
             self._db.executescript("PRAGMA journal_mode=WAL;" + _SCHEMA)
+            self._migrate()
+
+    def _migrate(self) -> None:
+        """旧数据库补列。只加列,不改不删,已有数据原样保留。"""
+        columns = {r["name"] for r in self._db.execute("PRAGMA table_info(audit)")}
+        if "degraded_reasons" not in columns:
+            self._db.execute("ALTER TABLE audit ADD COLUMN degraded_reasons TEXT NOT NULL DEFAULT '{}'")
 
     def open_turn(self, *, device: str, companion: str, episode_id: str, created_at: datetime,
                   context_hash: str, user_text: str) -> Turn:
@@ -156,13 +164,13 @@ class TranscriptLog:
     # --- 审计 ---
 
     def record_audit(self, *, turn_id: str, device: str, created_at: datetime, outcome: str, upstream: str,
-                     degraded_sources: list[str], memory_ids: list[str], latency_ms: int) -> None:
+                     degraded_reasons: dict[str, str], memory_ids: list[str], latency_ms: int) -> None:
         with self._lock:
             self._db.execute(
-                "INSERT INTO audit (turn_id, device, created_at, outcome, upstream, degraded_sources, memory_ids,"
-                " latency_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (turn_id, device, created_at.isoformat(), outcome, upstream,
-                 json.dumps(degraded_sources), json.dumps(memory_ids), latency_ms),
+                "INSERT INTO audit (turn_id, device, created_at, outcome, upstream, degraded_sources,"
+                " degraded_reasons, memory_ids, latency_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (turn_id, device, created_at.isoformat(), outcome, upstream, json.dumps(sorted(degraded_reasons)),
+                 json.dumps(degraded_reasons, ensure_ascii=False), json.dumps(memory_ids), latency_ms),
             )
 
     def audit_entries(self) -> list[dict[str, Any]]:
@@ -172,6 +180,7 @@ class TranscriptLog:
         for r in rows:
             entry = dict(r)
             entry["degraded_sources"] = json.loads(entry["degraded_sources"])
+            entry["degraded_reasons"] = json.loads(entry["degraded_reasons"])
             entry["memory_ids"] = json.loads(entry["memory_ids"])
             entry.pop("seq")
             out.append(entry)
