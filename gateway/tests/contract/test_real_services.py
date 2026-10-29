@@ -84,7 +84,36 @@ async def test_ombre_search_returns_parseable_ids_after_grow() -> None:
 
     hits = await store.recall(f"面试{marker}")
 
-    assert hits and hits[0].id and marker in hits[0].text
+    assert hits and all(len(h.id) == 12 for h in hits) and any(marker in h.text for h in hits)
+    assert not any("bucket_id" in h.text or "ombre:result-ids" in h.text for h in hits)
+
+
+@needs_ombre
+async def test_ombre_surface_without_query_returns_parseable_ids() -> None:
+    """不带查询的浮现不附 ID 块(Ombre 3.6.14);网关要从正文的 [bucket_id:…] 取 ID,否则段首浮现永远是空的。"""
+    store = _ombre()
+    marker = uuid.uuid4().hex[:8]
+    await store.write_episode("contract", f"用户:下个月要搬家去{marker}小区,有点舍不得现在的房子\n大肥鱼:我陪你一起收拾")
+
+    hits = await store.surface()
+
+    assert hits and all(len(h.id) == 12 for h in hits)
+    for h in hits:  # 只剩桶的正文,没有给工具调用方看的元数据
+        assert not any(m in h.text for m in ("bucket_id", "权重:", "👣", "↳", "=== ", "提高 max_tokens"))
+
+
+@needs_ombre
+async def test_ombre_archived_memory_is_not_recalled() -> None:
+    """deploy/ombre-archive.sh 用 trace(delete=True) 归档;Ombre 检索仍会命中归档桶,网关要跳过它。"""
+    store = _ombre()
+    marker = uuid.uuid4().hex[:8]
+    await store.write_episode("contract", f"用户:我养了一只叫{marker}的猫\n大肥鱼:好可爱")
+    ids = [h.id for h in await store.recall(f"{marker} 猫")]
+    assert ids
+    for bucket_id in ids:
+        await store._call("trace", {"bucket_id": bucket_id, "delete": True})
+
+    assert not [h for h in await store.recall(f"{marker} 猫") if h.id in ids]
 
 
 @needs_ombre
@@ -96,9 +125,9 @@ async def test_ombre_retried_grow_with_same_content_does_not_duplicate() -> None
     await store.write_episode("contract", transcript)
     await store.write_episode("contract", transcript)
 
-    [hit] = await store.recall(f"{marker}公园")
+    hits = await store.recall(f"{marker}公园")
 
-    assert len(hit.id.split(",")) == 1
+    assert len([h for h in hits if marker in h.text]) == 1
 
 
 @needs_ombre

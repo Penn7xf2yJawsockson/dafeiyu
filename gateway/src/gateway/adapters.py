@@ -8,23 +8,38 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Protocol
+from zoneinfo import ZoneInfo
 
 import httpx
 
 from gateway.stores import MemoryHit
 
 
+class Clock(Protocol):
+    def now(self) -> datetime: ...
+
+
 class HindsightStore:
-    def __init__(self, base_url: str, bank_id: str, api_key: str = "", recall_max_tokens: int = 1500,
-                 transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(self, base_url: str, bank_id: str, api_key: str = "", recall_max_tokens: int = 800,
+                 transport: httpx.AsyncBaseTransport | None = None, clock: Clock | None = None,
+                 tz: str = "Asia/Shanghai") -> None:
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._http = httpx.AsyncClient(base_url=base_url, headers=headers, timeout=180, transport=transport)
         self._path = f"/v1/default/banks/{bank_id}/memories"
         self._max_tokens = recall_max_tokens
+        self._clock = clock
+        self._tz = ZoneInfo(tz)
 
     async def recall(self, query: str) -> list[MemoryHit]:
-        resp = await self._http.post(f"{self._path}/recall", json={"query": query, "max_tokens": self._max_tokens})
+        # 参数依据 Hindsight 官方文档(developer/retrieval、best-practices):
+        # prefer_observations 让已合并成 observation 的原始事实不再重复出现;聊天每轮召回用 low 预算;
+        # query_timestamp 用用户本地时间,作为「下周」「昨天」和时近加分的基准。
+        now = self._clock.now() if self._clock else datetime.now(timezone.utc)
+        body = {"query": query, "max_tokens": self._max_tokens, "budget": "low", "prefer_observations": True,
+                "query_timestamp": now.astimezone(self._tz).isoformat(timespec="seconds")}
+        resp = await self._http.post(f"{self._path}/recall", json=body)
         if _bank_not_found(resp):
             return []  # 全新部署时 bank 要等第一次 retain 才建出来,这时就是"还没有记忆",不是故障
         resp.raise_for_status()
@@ -54,23 +69,47 @@ def _bank_not_found(resp: httpx.Response) -> bool:
 
 
 _IDS_BLOCK = re.compile(r"=== ombre:result-ids ===\s*```json\s*(\{.*?\})\s*```", re.S)
+# 每个桶以一行 `[权重:…] [bucket_id:…]`(浮现)或 `[bucket_id:…]`(检索)开头
+_BUCKET_HEAD = re.compile(r"^(?:\[[^\]\n]*\]\s*)*\[bucket_id:([0-9a-f]+)\][^\n]*$", re.M)
+# 给工具调用方看的元数据行:关系、来源脚注、分隔线、区块标题
+_META_LINE = re.compile(r"^\s*(?:↳ .*|👣 .*|-{3,}|=== .* ===)\s*$")
+# 浮现放不下时 Ombre 附的提示是写给工具调用方的(「请提高 max_tokens 后重试」),不进召回块
+_BUDGET_NOTE = re.compile(r"\n*token 预算不足[:：].*$", re.S)
+# Dashboard「归档」生成的待审批删除申请,Ombre 附在浮现/检索结果最前面,是给能调用 trace 的 AI 看的审批单。
+# 它一直延续到第一个真正的桶开头那一行(该行不带 request_id)。
+_PENDING_DELETIONS = re.compile(
+    r"=== Pending human deletion requests.*?(?=^(?:\[(?!request_id:)[^\]\n]*\]\s*)*\[bucket_id:(?![^\n]*request_id)|\Z)",
+    re.S | re.M)
 
 
 def parse_ombre_result(text: str) -> list[MemoryHit]:
-    """with_ids=True 的返回:人类可读正文 + 末尾的机器可读 ID 块(Ombre 3.6.4 契约)。
+    """Ombre 3.6 的返回 → 每个桶一条记忆,只保留桶的正文。
 
-    正文无法可靠地按桶切开,所以整段正文作为一条记忆返回,ID 用逗号连接进审计。
+    带查询的检索末尾附机器可读的 ID 块;不带查询的浮现不附,ID 只在每个桶开头那行的
+    `[bucket_id:…]` 里。两种都按桶开头那行切开;有 ID 块时只保留块里列出的桶。
     """
     match = _IDS_BLOCK.search(text)
-    if match is None:
-        return []
-    ids: list[str] = json.loads(match.group(1)).get("bucket_ids", [])
-    body = text[: match.start()].strip()
-    return [MemoryHit(",".join(ids), body)] if ids and body else []
+    listed: list[str] | None = None
+    if match is not None:
+        listed = json.loads(match.group(1)).get("bucket_ids", [])
+        text = text[: match.start()]
+    text = _BUDGET_NOTE.sub("", _PENDING_DELETIONS.sub("", text))
+    heads = list(_BUCKET_HEAD.finditer(text))
+    hits: list[MemoryHit] = []
+    for i, head in enumerate(heads):
+        bucket_id = head.group(1)
+        chunk = text[head.end(): heads[i + 1].start() if i + 1 < len(heads) else len(text)]
+        body = "\n".join(line for line in chunk.splitlines() if not _META_LINE.match(line)).strip()
+        archived = "已删除到档案" in head.group(0) or "已退出日常记忆" in head.group(0)
+        if archived:  # 检索仍会命中归档的桶并附恢复提示;归档就是不再让它出现
+            continue
+        if body and (listed is None or bucket_id in listed) and all(h.id != bucket_id for h in hits):
+            hits.append(MemoryHit(bucket_id, body))
+    return hits
 
 
 class OmbreStore:
-    def __init__(self, mcp_url: str, token: str = "", search_max_results: int = 5, surface_max_tokens: int = 2000,
+    def __init__(self, mcp_url: str, token: str = "", search_max_results: int = 5, surface_max_tokens: int = 800,
                  transport: httpx.AsyncBaseTransport | None = None) -> None:
         headers = {"Accept": "application/json, text/event-stream"}
         if token:

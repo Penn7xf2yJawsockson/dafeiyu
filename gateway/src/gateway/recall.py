@@ -35,11 +35,14 @@ async def recall(*, query: str, facts: MemoryStore, affect: MemoryStore, timeout
     if surface:
         jobs.append(_guarded("surfaced", affect.surface(), timeout, reasons))
     results = await asyncio.gather(*jobs)
+    surfaced = results[2] if surface else []
+    # 同一个桶既被段首浮现、又被本轮检索命中时,只留在「心里还挂着的事」里
+    seen = {h.id for h in surfaced}
     return Recall(
         handoff=handoff,
-        surfaced=results[2] if surface else [],
+        surfaced=surfaced,
         lore=lore,
         facts=results[0],
-        affect=results[1],
+        affect=[h for h in results[1] if h.id not in seen],
         degraded_reasons=dict(sorted(reasons.items())),
     )
