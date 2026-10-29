@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Any
@@ -20,6 +21,7 @@ from gateway.stores import MemoryHit, MemoryStore
 from gateway.transcript import FAILED, PENDING, SETTLED, SUPERSEDED, TranscriptLog, Turn
 
 FACTS, AFFECT = "facts", "affect"
+logger = logging.getLogger("gateway.lifecycle")
 _EDIT_SIMILARITY = 0.5
 
 
@@ -92,8 +94,7 @@ class Lifecycle:
         return prev
 
     def settle(self, turn: Turn) -> None:
-        self._log.set_status(turn.id, SETTLED)
-        self._log.enqueue(FACTS, turn.episode_id)
+        self._log.settle_turn(turn.id, turn.episode_id, FACTS)
 
     def episode_for(self, device: str, companion: str, now: datetime) -> tuple[str, bool]:
         """返回 (episode_id, 是否为段的第一轮)。需要开新段时先关闭旧段。
@@ -136,8 +137,7 @@ class Lifecycle:
     def close_episode(self, episode_id: str, now: datetime) -> None:
         for t in self._log.turns("episode_id = ? AND status = ?", (episode_id, PENDING)):
             self.settle(t)
-        if self._log.close_episode(episode_id, now):
-            self._log.enqueue(AFFECT, episode_id)
+        self._log.close_episode_and_enqueue(episode_id, now, AFFECT)
 
     def sweep_idle(self, now: datetime) -> None:
         cutoff = timedelta(minutes=self._s.episode_idle_minutes)
@@ -146,14 +146,24 @@ class Lifecycle:
             if turns and now - turns[-1].created_at > cutoff:
                 self.close_episode(episode_id, now)
 
-    async def drain(self) -> None:
-        for seq, kind, episode_id in self._log.pending_jobs():
+    def reconcile(self) -> int:
+        """启动时对照原文日志补入写入任务(见 TranscriptLog.unwritten_episodes)。返回补了几个。"""
+        missing = self._log.unwritten_episodes(FACTS, AFFECT)
+        for kind, episode_id in missing:
+            self._log.enqueue(kind, episode_id)
+        return len(missing)
+
+    async def drain(self, now: datetime) -> None:
+        for seq, kind, episode_id, attempts in self._log.pending_jobs(now):
             settled = self._log.turns("episode_id = ? AND status = ?", (episode_id, SETTLED))
             store = self._facts if kind == FACTS else self._affect
             try:
                 if settled:
                     await store.write_episode(episode_id, render_transcript(settled))
-            except Exception as exc:  # 写入失败留在队列里,下次重试
-                self._log.finish_job(seq, f"{type(exc).__name__}: {exc}")
+            except Exception as exc:  # 写入失败留在队列里,按指数退避重试
+                delay = min(self._s.retry_base_seconds * 2 ** attempts, self._s.retry_max_seconds)
+                self._log.finish_job(seq, f"{type(exc).__name__}: {exc}", retry_at=now + timedelta(seconds=delay))
+                logger.warning("写入 %s 失败(第 %d 次),%gs 后重试 episode=%s: %s",
+                               kind, attempts + 1, delay, episode_id, exc)
                 continue
-            self._log.finish_job(seq, None)
+            self._log.finish_job(seq, None, written_turns=len(settled))

@@ -83,7 +83,7 @@ def create_app(
     async def tick() -> None:
         async with drain_lock:
             life.sweep_idle(clock.now())
-            await life.drain()
+            await life.drain(clock.now())
 
     def tick_soon() -> None:
         """立刻在后台推进写入队列:刚确定的轮尽早写进事实库,下一轮就能查到。"""
@@ -95,6 +95,8 @@ def create_app(
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         task: asyncio.Task[None] | None = None
+        if found := life.reconcile():
+            logger.warning("启动对账:补入 %d 个漏掉的记忆写入任务", found)
         if settings.background_worker:
             async def loop() -> None:
                 while True:
