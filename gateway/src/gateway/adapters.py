@@ -69,23 +69,30 @@ def _bank_not_found(resp: httpx.Response) -> bool:
 
 
 _IDS_BLOCK = re.compile(r"=== ombre:result-ids ===\s*```json\s*(\{.*?\})\s*```", re.S)
+_BUCKET_MARKER = re.compile(r"\[bucket_id:([0-9a-f]+)\]")
+# 浮现放不下时 Ombre 附的提示是写给工具调用方的(「请提高 max_tokens 后重试」),不进召回块
+_BUDGET_NOTE = re.compile(r"\n*token 预算不足[:：].*$", re.S)
 
 
 def parse_ombre_result(text: str) -> list[MemoryHit]:
-    """with_ids=True 的返回:人类可读正文 + 末尾的机器可读 ID 块(Ombre 3.6.4 契约)。
+    """Ombre 3.6 的返回:人类可读正文,带查询时末尾另附机器可读的 ID 块。
 
+    不带查询的浮现不附 ID 块,ID 只在正文每个桶开头的 `[bucket_id:…]` 里,这时从正文取。
     正文无法可靠地按桶切开,所以整段正文作为一条记忆返回,ID 用逗号连接进审计。
     """
     match = _IDS_BLOCK.search(text)
-    if match is None:
-        return []
-    ids: list[str] = json.loads(match.group(1)).get("bucket_ids", [])
-    body = text[: match.start()].strip()
+    if match is not None:
+        ids: list[str] = json.loads(match.group(1)).get("bucket_ids", [])
+        body = text[: match.start()].strip()
+    else:
+        ids = list(dict.fromkeys(_BUCKET_MARKER.findall(text)))
+        body = text.strip()
+    body = _BUDGET_NOTE.sub("", body).strip()
     return [MemoryHit(",".join(ids), body)] if ids and body else []
 
 
 class OmbreStore:
-    def __init__(self, mcp_url: str, token: str = "", search_max_results: int = 5, surface_max_tokens: int = 2000,
+    def __init__(self, mcp_url: str, token: str = "", search_max_results: int = 5, surface_max_tokens: int = 800,
                  transport: httpx.AsyncBaseTransport | None = None) -> None:
         headers = {"Accept": "application/json, text/event-stream"}
         if token:

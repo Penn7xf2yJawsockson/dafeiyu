@@ -88,6 +88,19 @@ async def test_ombre_search_returns_parseable_ids_after_grow() -> None:
 
 
 @needs_ombre
+async def test_ombre_surface_without_query_returns_parseable_ids() -> None:
+    """不带查询的浮现不附 ID 块(Ombre 3.6.14);网关要从正文的 [bucket_id:…] 取 ID,否则段首浮现永远是空的。"""
+    store = _ombre()
+    marker = uuid.uuid4().hex[:8]
+    await store.write_episode("contract", f"用户:下个月要搬家去{marker}小区,有点舍不得现在的房子\n大肥鱼:我陪你一起收拾")
+
+    [hit] = await store.surface()
+
+    assert hit.id and all(len(i) == 12 for i in hit.id.split(","))
+    assert "ombre:result-ids" not in hit.text and "提高 max_tokens" not in hit.text
+
+
+@needs_ombre
 async def test_ombre_retried_grow_with_same_content_does_not_duplicate() -> None:
     """写入队列重试时依赖 Ombre grow 的 30 分钟同内容去重。"""
     store = _ombre()
