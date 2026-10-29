@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from gateway import anthropic
 from gateway import upstream as up
-from gateway.background import is_background, is_compress, is_time_context
+from gateway.background import is_background, is_compress, is_client_context
 from gateway.compose import compose, local_time_line, render_recall_block, turn_start
 from gateway.config import Settings
 from gateway.lifecycle import Lifecycle, context_hash, message_text
@@ -128,9 +128,9 @@ def create_app(
         if body.get("model") == direct_model or is_background(body):
             return await passthrough(body, incoming)
         started = time.monotonic()
-        # DSH 的时间上下文不是用户说的话:判定轮次、召回、记忆都看去掉它之后的历史;发给上游时原样保留
+        # DSH 注入的宿主上下文(时间、运行环境、技能清单)不是用户说的话:判定轮次、召回、记忆都看去掉它之后的历史;发给上游时原样保留
         full = [m for m in body.get("messages") or [] if m.get("role") != "system"]
-        history = [m for m in full if not is_time_context(m)]
+        history = [m for m in full if not is_client_context(m)]
         client_system = "\n\n".join(text for m in body.get("messages") or []
                                      if m.get("role") == "system" and (text := message_text(m.get("content"))))
         start = turn_start(history)

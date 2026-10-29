@@ -1,11 +1,13 @@
 """DSH(DeepSeek Harness 桌面版)接入。
 
 DSH 和 Kelivo 有两处不同,网关要认得:
-- 时间上下文:DSH 每隔一段时间在请求末尾追加一条用户消息「Time sampled while preparing turn N, step M: …」。
-  它不是用户说的话:不能当成本轮的用户消息、不能拿去召回、不能写进记忆;原样留给上游模型看。
+- 宿主上下文:DSH 在用户那句话之后以用户消息身份注入运行环境(「Current runtime context. …」)、
+  技能清单(「<system-reminder>…」),并每隔一段时间追加时间(「Time sampled while preparing turn N, step M: …」)。
+  它们不是用户说的话:不能当成本轮的用户消息、不能拿去召回、不能写进记忆;原样留给上游模型看。
 - 后台请求:起会话标题、压缩上下文(compaction)。这些不是对话,不召回、不记成一轮;
   压缩和 Kelivo 一样,先把这一段写进两个记忆库。
-提示词取自 DSH 2.0.18 随包的 @deepseek-ai/dsh-time-context、dsh-session-title-*-llm、dsh-compaction-basic。
+提示词取自 DSH 2.0.18 随包的 dsh-time-context、dsh-system-prompt、dsh-tool-skill、dsh-session-title-*-llm、
+dsh-compaction-basic;消息顺序取自 2026-10-29 的真实抓包。
 """
 
 from typing import Any
@@ -116,3 +118,39 @@ def test_compaction_is_passed_through_and_writes_the_episode(harness: Harness) -
     [turn] = harness.turns()
     assert turn["status"] == "settled"
     assert "我下周三生日" in harness.affect.writes[-1]["transcript"]
+
+
+RUNTIME = _u("Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\n"
+             "Current working directory: C:\\Users\\x\\workspace")
+SKILLS = _u("<system-reminder>\nA skill is a reusable set of task-specific instructions. The following skills are "
+            "available in this session:\n\n<available_skills>\n</available_skills>\n</system-reminder>")
+
+
+def test_first_dsh_request_with_runtime_and_skill_snapshots(harness: Harness) -> None:
+    """真实抓包里第一轮的形状:[系统][用户那句话][运行环境][技能清单][时间]。"""
+    sent = [SYSTEM, _u("我下周六要去南昌看演唱会"), RUNTIME, SKILLS, _time(1)]
+    harness.chat(sent)
+
+    [turn] = harness.turns()
+    assert turn["user_text"] == "我下周六要去南昌看演唱会"
+    assert harness.facts.queries == ["我下周六要去南昌看演唱会"]
+    out = harness.upstream.last["messages"]
+    assert out[-5]["role"] == "system" and out[-4:] == sent[1:]  # 召回块在用户那句话前,注入的上下文原样跟在后面
+
+
+def test_second_dsh_turn_settles_the_first_with_the_users_words(harness: Harness) -> None:
+    first = [SYSTEM, _u("我下周六要去南昌看演唱会"), RUNTIME, SKILLS, _time(1)]
+    harness.chat(first)
+    harness.chat([*first, _a("好呀"), _u("有点紧张")])
+    harness.tick()
+
+    assert [(t["user_text"], t["status"]) for t in harness.turns()] == [("我下周六要去南昌看演唱会", "settled"),
+                                                                        ("有点紧张", "pending")]
+    transcript = harness.facts.writes[-1]["transcript"]
+    assert "南昌看演唱会" in transcript and "available_skills" not in transcript
+
+
+def test_a_user_who_types_system_reminder_mid_sentence_is_still_heard(harness: Harness) -> None:
+    harness.chat([SYSTEM, _u("你知道 <system-reminder> 是什么吗")])
+
+    assert harness.turns()[0]["user_text"] == "你知道 <system-reminder> 是什么吗"

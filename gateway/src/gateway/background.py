@@ -1,4 +1,4 @@
-"""不属于对话的请求:Kelivo / DSH 的后台任务,以及无记忆直通模型;还有 DSH 的时间上下文消息。
+"""不属于对话的请求:Kelivo / DSH 的后台任务,以及无记忆直通模型;还有 DSH 注入的宿主上下文消息。
 
 这类请求只原样转发给上游:不召回、不记成一轮、不进记忆,也不影响正在进行的那一轮。
 """
@@ -35,19 +35,23 @@ DSH_BACKGROUND_PROMPTS = (
 COMPRESS_PROMPTS = (KELIVO_COMPRESS_PROMPT, DSH_COMPRESS_PROMPT)
 BACKGROUND_PROMPTS = KELIVO_BACKGROUND_PROMPTS + DSH_BACKGROUND_PROMPTS
 
-# DSH 的 dsh-time-context 每隔一段时间在请求末尾追加的用户消息。
-_TIME_CONTEXT = re.compile(r"Time sampled while preparing turn \d+, step \d+: ")
+# DSH 以用户消息身份注入的宿主上下文(都排在用户那句话之后):
+#   dsh-time-context      "Time sampled while preparing turn N, step M: …"
+#   dsh-system-prompt     "Current runtime context. This snapshot supersedes …"(工作目录、环境)
+#   dsh-agent-loop        "Current runtime context: none. …"
+#   dsh-tool-skill 等     "<system-reminder>…"(技能清单、工作区指令等)
+_CLIENT_CONTEXT = re.compile(r"Time sampled while preparing turn \d+, step \d+: |Current runtime context[.:]|<system-reminder>")
 
 
-def is_time_context(message: dict[str, Any]) -> bool:
-    """DSH 追加的时间上下文。它不是用户说的话:不算本轮的用户消息、不召回、不进记忆,但仍发给上游。"""
-    return message.get("role") == "user" and bool(_TIME_CONTEXT.match(message_text(message.get("content")).lstrip()))
+def is_client_context(message: dict[str, Any]) -> bool:
+    """客户端注入的上下文,不是用户说的话:不算本轮的用户消息、不召回、不进记忆,但仍发给上游。"""
+    return message.get("role") == "user" and bool(_CLIENT_CONTEXT.match(message_text(message.get("content")).lstrip()))
 
 
 def _candidates(body: dict[str, Any]) -> list[str]:
     messages = body.get("messages") or []
     picked = [m for m in messages if m.get("role") == "system"]
-    users = [m for m in messages if m.get("role") == "user" and not is_time_context(m)]
+    users = [m for m in messages if m.get("role") == "user" and not is_client_context(m)]
     if users:
         picked.append(users[-1])
     return [message_text(m.get("content")).lstrip() for m in picked]
