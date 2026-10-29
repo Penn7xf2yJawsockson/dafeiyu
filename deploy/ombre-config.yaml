@@ -1,0 +1,19 @@
+# Ombre-Brain 配置(复制到 data/ombre/config.yaml)。只覆盖本项目需要改的项,其余用 Ombre 默认值。
+# 密钥一律走环境变量(OMBRE_COMPRESS_API_KEY / OMBRE_EMBED_API_KEY),不写在这里。
+
+dehydration:                       # 情感打标(ADR-0007)
+  model: "deepseek-flash"
+  base_url: "https://api.deepseek.com/v1"
+  max_tokens: 4096                 # 太小会截断 JSON,记忆全被标成「未分类」
+  digest_max_tokens: 8192
+  temperature: 0.1
+  timeout_seconds: 120
+  extra_body:
+    thinking:
+      type: disabled               # 关闭推理,预算全部留给 JSON;以契约测试为准
+
+embedding:                         # 两个记忆库共用 bge-m3(ADR-0007)
+  enabled: true
+  backend: "api"
+  model: "BAAI/bge-m3"
+  base_url: "https://api.siliconflow.cn/v1"
