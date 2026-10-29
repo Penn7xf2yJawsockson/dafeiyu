@@ -47,10 +47,11 @@ def build() -> FastAPI:
         admin_token=_env("GATEWAY_ADMIN_TOKEN"),
         debug_capture=int(os.environ.get("GATEWAY_DEBUG_CAPTURE", "0") or "0"),
     )
+    clock = SystemClock()
     facts = HindsightStore(_env("HINDSIGHT_URL", "http://hindsight:8888"), _env("HINDSIGHT_BANK", "dafeiyu"),
-                           api_key=_env("HINDSIGHT_API_KEY"))
+                           api_key=_env("HINDSIGHT_API_KEY"), clock=clock, tz=settings.timezone)
     affect = OmbreStore(_env("OMBRE_MCP_URL", "http://ombre:8000/mcp"), token=_env("OMBRE_MCP_TOKEN"))
-    return create_app(settings, fact_store=facts, affect_store=affect, clock=SystemClock())
+    return create_app(settings, fact_store=facts, affect_store=affect, clock=clock)
 
 
 def run() -> None:

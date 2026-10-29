@@ -8,23 +8,38 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Protocol
+from zoneinfo import ZoneInfo
 
 import httpx
 
 from gateway.stores import MemoryHit
 
 
+class Clock(Protocol):
+    def now(self) -> datetime: ...
+
+
 class HindsightStore:
-    def __init__(self, base_url: str, bank_id: str, api_key: str = "", recall_max_tokens: int = 1500,
-                 transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(self, base_url: str, bank_id: str, api_key: str = "", recall_max_tokens: int = 800,
+                 transport: httpx.AsyncBaseTransport | None = None, clock: Clock | None = None,
+                 tz: str = "Asia/Shanghai") -> None:
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._http = httpx.AsyncClient(base_url=base_url, headers=headers, timeout=180, transport=transport)
         self._path = f"/v1/default/banks/{bank_id}/memories"
         self._max_tokens = recall_max_tokens
+        self._clock = clock
+        self._tz = ZoneInfo(tz)
 
     async def recall(self, query: str) -> list[MemoryHit]:
-        resp = await self._http.post(f"{self._path}/recall", json={"query": query, "max_tokens": self._max_tokens})
+        # 参数依据 Hindsight 官方文档(developer/retrieval、best-practices):
+        # prefer_observations 让已合并成 observation 的原始事实不再重复出现;聊天每轮召回用 low 预算;
+        # query_timestamp 用用户本地时间,作为「下周」「昨天」和时近加分的基准。
+        now = self._clock.now() if self._clock else datetime.now(timezone.utc)
+        body = {"query": query, "max_tokens": self._max_tokens, "budget": "low", "prefer_observations": True,
+                "query_timestamp": now.astimezone(self._tz).isoformat(timespec="seconds")}
+        resp = await self._http.post(f"{self._path}/recall", json=body)
         if _bank_not_found(resp):
             return []  # 全新部署时 bank 要等第一次 retain 才建出来,这时就是"还没有记忆",不是故障
         resp.raise_for_status()
