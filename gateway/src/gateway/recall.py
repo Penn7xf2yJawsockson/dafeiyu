@@ -19,14 +19,14 @@ async def _guarded(name: str, call: Awaitable[list[MemoryHit]], timeout: float,
 
 
 async def recall(*, query: str, facts: MemoryStore, affect: MemoryStore, timeout: float,
-                 surface: bool, handoff: list[str], lore: list[MemoryHit]) -> Recall:
+                 surface: bool, handoff: list[MemoryHit], lore: list[MemoryHit]) -> Recall:
     degraded: list[str] = []
     jobs = [
         _guarded("facts", facts.recall(query), timeout, degraded),
         _guarded("affect", affect.recall(query), timeout, degraded),
     ]
     if surface:
-        jobs.append(_guarded("affect-surface", affect.surface(), timeout, degraded))
+        jobs.append(_guarded("surfaced", affect.surface(), timeout, degraded))
     results = await asyncio.gather(*jobs)
     return Recall(
         handoff=handoff,

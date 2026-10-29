@@ -63,5 +63,5 @@ def test_recalled_memory_ids_are_audited(harness: Harness) -> None:
     harness.chat([{"role": "user", "content": "最近怎么样"}])
 
     [entry] = harness.audit()
-    assert set(entry["memory_ids"]) == {"fact:f1", "fact:f2", "affect:o7"}
+    assert set(entry["memory_ids"]) == {"facts:f1", "facts:f2", "affect:o7"}
     assert entry["outcome"] == "ok"

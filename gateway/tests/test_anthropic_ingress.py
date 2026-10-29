@@ -63,6 +63,26 @@ def test_anthropic_ingress_rejects_unknown_key(harness: Harness) -> None:
     assert resp.json()["type"] == "error"
 
 
+def test_anthropic_stream_broken_midway_emits_error_event_not_message_stop(harness: Harness) -> None:
+    harness.upstream.break_midstream = True
+
+    resp = _messages(harness, {"stream": True, "messages": [{"role": "user", "content": "讲个故事"}]})
+
+    kinds = [json.loads(line[6:])["type"] for line in resp.text.splitlines() if line.startswith("data: ")]
+    assert kinds[-1] == "error"
+    assert "message_stop" not in kinds
+
+
+def test_anthropic_error_handles_plain_string_error_body(harness: Harness) -> None:
+    harness.upstream.fail_status = 500
+    harness.upstream.fail_body = {"error": "上游内部错误"}
+
+    resp = _messages(harness, {"messages": [{"role": "user", "content": "嗨"}]})
+
+    assert resp.status_code == 500
+    assert resp.json()["error"]["message"] == "上游内部错误"
+
+
 def test_anthropic_upstream_error_comes_back_as_anthropic_error(harness: Harness) -> None:
     harness.upstream.fail_status = 429
 

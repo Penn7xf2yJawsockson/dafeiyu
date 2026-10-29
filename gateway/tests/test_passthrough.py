@@ -78,6 +78,25 @@ def test_upstream_error_is_returned_and_audited_as_failed(harness: Harness) -> N
     assert harness.turns()[0]["status"] == "failed"
 
 
+def test_stream_broken_midway_ends_with_an_error_not_a_normal_finish(harness: Harness) -> None:
+    harness.upstream.break_midstream = True
+    harness.upstream.reply = "说到一半就断了"
+
+    resp = harness.chat([{"role": "user", "content": "讲个故事"}], stream=True)
+
+    assert "data: [DONE]" not in resp.text
+    last_event = json.loads([ln for ln in resp.text.splitlines() if ln.startswith("data: ")][-1][6:])
+    assert "error" in last_event
+    assert harness.turns()[0]["status"] == "failed"
+
+
+def test_empty_messages_is_a_client_error(harness: Harness) -> None:
+    resp = harness.chat([])
+
+    assert resp.status_code == 400
+    assert harness.upstream.requests == []
+
+
 def test_admin_endpoints_require_admin_token(harness: Harness) -> None:
     assert harness.client.get("/admin/turns").status_code == 401
     assert harness.client.get("/admin/turns", headers={"Authorization": "Bearer tok-pc"}).status_code == 401

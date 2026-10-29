@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -43,15 +43,21 @@ class FakeUpstream:
 
     reply: str = "好的"
     fail_status: int | None = None
+    fail_body: Any = None
+    break_midstream: bool = False
     requests: list[dict[str, Any]] = field(default_factory=list)
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         self.requests.append(body)
         if self.fail_status is not None:
-            return httpx.Response(self.fail_status, json={"error": {"message": "上游故障"}})
+            error = self.fail_body if self.fail_body is not None else {"error": {"message": "上游故障"}}
+            return httpx.Response(self.fail_status, json=error)
         if body.get("stream"):
-            return httpx.Response(200, content=_sse(self.reply), headers={"content-type": "text/event-stream"})
+            headers = {"content-type": "text/event-stream"}
+            if self.break_midstream:
+                return httpx.Response(200, stream=_BrokenStream(_sse(self.reply)), headers=headers)
+            return httpx.Response(200, content=_sse(self.reply), headers=headers)
         return httpx.Response(200, json=_completion(self.reply))
 
     @property
@@ -77,6 +83,17 @@ def _sse(text: str) -> bytes:
                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
     lines = [f"data: {json.dumps(c, ensure_ascii=False)}\n\n" for c in chunks]
     return ("".join(lines) + "data: [DONE]\n\n").encode()
+
+
+class _BrokenStream(httpx.AsyncByteStream):
+    """只发出第一个增量块,然后连接中断。"""
+
+    def __init__(self, full: bytes) -> None:
+        self._first = full.split(b"\n\n")[0] + b"\n\n"
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield self._first
+        raise httpx.ReadError("连接中断")
 
 
 @dataclass

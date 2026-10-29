@@ -62,6 +62,16 @@ def test_superseded_turns_never_reach_affect_store(harness: Harness) -> None:
     assert "被放弃的回复" not in write["transcript"]
 
 
+def test_regenerating_the_first_turn_still_surfaces(harness: Harness) -> None:
+    harness.affect.surfaced = [MemoryHit("o1", "上周面试的结果还没出来")]
+    harness.chat(_conversation(1))
+    harness.chat(_conversation(1))  # 重新生成段的第一轮
+
+    assert "面试的结果还没出来" in harness.upstream.last["messages"][-2]["content"]
+    first, second = harness.turns()
+    assert first["episode_id"] == second["episode_id"]
+
+
 def test_affect_surfacing_happens_only_on_first_turn_of_episode(harness: Harness) -> None:
     harness.affect.surfaced = [MemoryHit("o1", "上周面试的结果还没出来,用户很焦虑")]
 

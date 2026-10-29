@@ -57,8 +57,17 @@ def from_openai(raw: dict[str, Any], model: str) -> dict[str, Any]:
     }
 
 
+def _message(body: Any) -> str:
+    err = body.get("error") if isinstance(body, dict) else None
+    if isinstance(err, dict):
+        return str(err.get("message", err))
+    if isinstance(err, str):
+        return err
+    return str(body)
+
+
 def error(status: int, body: Any) -> dict[str, Any]:
-    message = body.get("error", {}).get("message", str(body)) if isinstance(body, dict) else str(body)
+    message = _message(body)
     kind = {401: "authentication_error", 429: "rate_limit_error", 400: "invalid_request_error"}.get(status, "api_error")
     return {"type": "error", "error": {"type": kind, "message": message}}
 
@@ -80,7 +89,12 @@ async def stream_from_openai(chunks: AsyncIterator[bytes], model: str) -> AsyncI
         for line in raw.decode().splitlines():
             if not line.startswith("data: ") or line == "data: [DONE]":
                 continue
-            for choice in json.loads(line[6:]).get("choices", []):
+            data = json.loads(line[6:])
+            if "error" in data:  # 上游中途断开:发 error 事件,不发 message_stop
+                yield _event("error", {"type": "error",
+                                       "error": {"type": "api_error", "message": _message(data)}})
+                return
+            for choice in data.get("choices", []):
                 text = (choice.get("delta") or {}).get("content")
                 if text:
                     yield _event("content_block_delta", {"type": "content_block_delta", "index": 0,

@@ -24,5 +24,11 @@ class MemoryStore(Protocol):
         ...
 
     async def write_episode(self, episode_id: str, transcript: str) -> None:
-        """写入一段对话。同一 episode_id 重复写入必须是幂等的覆盖。"""
+        """写入一段对话。写入队列会在失败后重试,实现必须保证重试不产生重复记忆:
+
+        - 事实库(Hindsight):同一 document_id 再次 retain 即整体替换,天然幂等。
+        - 情感库(Ombre-Brain):grow 对相同内容有 30 分钟进程内去重(INTERNALS §3.3);
+          网关渲染的段原文是确定的,所以窗口内的重试安全。Ombre 重启或超过窗口后的重试
+          仍可能重复——这是已知限制,见契约测试。
+        """
         ...

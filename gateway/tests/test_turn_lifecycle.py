@@ -54,6 +54,38 @@ def test_edited_message_supersedes_the_old_version(harness: Harness) -> None:
     assert "周四" in harness.facts.writes[-1]["transcript"]
 
 
+def test_starting_a_new_chat_settles_the_previous_turn(harness: Harness) -> None:
+    """新开对话不等于否定上一轮(用户 2026-10-29 确认)。"""
+    harness.chat([_u("我叫小鱼")])
+    harness.chat([_u("换个话题,今天吃什么")])  # Kelivo 里新开了一个对话
+    harness.tick()
+
+    assert [t["status"] for t in harness.turns()] == ["settled", "pending"]
+    assert "我叫小鱼" in harness.facts.writes[-1]["transcript"]
+
+
+def test_starting_a_new_chat_deep_in_a_conversation_settles_the_previous_turn(harness: Harness) -> None:
+    harness.chat([_u("一")])
+    harness.chat([_u("一"), _a("好的"), _u("我叫小鱼")])
+    harness.chat([_u("新对话的第一句")])
+    harness.tick()
+
+    assert [t["status"] for t in harness.turns()] == ["settled", "settled", "pending"]
+
+
+def test_failed_regenerate_keeps_the_original_reply(harness: Harness) -> None:
+    harness.upstream.reply = "原来的回复"
+    harness.chat([_u("我叫小鱼")])
+    harness.upstream.fail_status = 503
+    harness.chat([_u("我叫小鱼")])  # 点了重新生成,但上游失败
+    harness.upstream.fail_status = None
+    harness.chat([_u("我叫小鱼"), _a("原来的回复"), _u("嗯")])  # 用户继续用原来的回复
+    harness.tick()
+
+    assert [t["status"] for t in harness.turns()] == ["settled", "failed", "pending"]
+    assert "原来的回复" in harness.facts.writes[-1]["transcript"]
+
+
 def test_fact_writes_for_one_episode_share_one_document(harness: Harness) -> None:
     harness.chat([_u("一")])
     harness.chat([_u("一"), _a("好的"), _u("二")])

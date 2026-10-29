@@ -41,6 +41,16 @@ def test_streaming_degraded_turn_shows_notice_before_finish(harness: Harness) ->
     assert "".join(texts).startswith("嗯嗯")
 
 
+def test_notice_is_stripped_from_multipart_assistant_content(harness: Harness) -> None:
+    harness.chat([
+        {"role": "user", "content": "看图"},
+        {"role": "assistant", "content": [{"type": "text", "text": "好看\n\n" + NOTICE}]},
+        {"role": "user", "content": "再说说"},
+    ])
+
+    assert NOTICE not in json.dumps(harness.upstream.last["messages"], ensure_ascii=False)
+
+
 def test_notice_is_not_part_of_memory_or_upstream_history(harness: Harness) -> None:
     harness.affect.fail = True
     harness.upstream.reply = "好呀"

@@ -24,7 +24,7 @@ async def open_stream(client: httpx.AsyncClient, payload: dict[str, Any]) -> htt
     try:
         response = await client.send(request, stream=True)
     except httpx.HTTPError as exc:
-        return UpstreamError(502, {"error": {"message": f"upstream unreachable: {exc}"}})
+        return _unreachable(exc)
     if response.status_code != 200:
         raw = await response.aread()
         await response.aclose()
@@ -56,18 +56,19 @@ async def relay_stream(response: httpx.Response, on_done: OnDone, notice: str = 
             if pending_notice and any(c.get("finish_reason") for c in choices):
                 for c in choices:
                     parts.append((c.get("delta") or {}).get("content") or "")
-                body_only = [{**c, "finish_reason": None} for c in choices]
-                yield f"data: {json.dumps({**chunk, 'choices': body_only}, ensure_ascii=False)}\n\n".encode()
+                yield sse_data({**chunk, "choices": [{**c, "finish_reason": None} for c in choices]})
                 yield _notice_chunk(pending_notice)
                 pending_notice = ""
-                finish_only = [{**c, "delta": {}} for c in choices]
-                yield f"data: {json.dumps({**chunk, 'choices': finish_only}, ensure_ascii=False)}\n\n".encode()
+                yield sse_data({**chunk, "choices": [{**c, "delta": {}} for c in choices]})
                 continue
             for c in choices:
                 parts.append((c.get("delta") or {}).get("content") or "")
             yield f"data: {data}\n\n".encode()
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
         ok = False
+        # 中途断开必须让客户端看到错误,而不是一个"正常结束"的半截回复
+        yield sse_data({"error": {"message": f"upstream stream interrupted: {exc}",
+                                  "type": "upstream_stream_interrupted"}})
     finally:
         await response.aclose()
         await on_done("".join(parts), ok)
@@ -77,7 +78,7 @@ async def complete(client: httpx.AsyncClient, payload: dict[str, Any]) -> tuple[
     try:
         response = await client.post("/chat/completions", json=payload)
     except httpx.HTTPError as exc:
-        return UpstreamError(502, {"error": {"message": f"upstream unreachable: {exc}"}})
+        return _unreachable(exc)
     if response.status_code != 200:
         return UpstreamError(response.status_code, _json_or_text(response.content))
     body: dict[str, Any] = response.json()
@@ -85,10 +86,17 @@ async def complete(client: httpx.AsyncClient, payload: dict[str, Any]) -> tuple[
     return text, body
 
 
+def sse_data(obj: dict[str, Any]) -> bytes:
+    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n".encode()
+
+
 def _notice_chunk(notice: str) -> bytes:
-    chunk = {"object": "chat.completion.chunk",
-             "choices": [{"index": 0, "delta": {"content": notice}, "finish_reason": None}]}
-    return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode()
+    return sse_data({"object": "chat.completion.chunk",
+                     "choices": [{"index": 0, "delta": {"content": notice}, "finish_reason": None}]})
+
+
+def _unreachable(exc: Exception) -> UpstreamError:
+    return UpstreamError(502, {"error": {"message": f"upstream unreachable: {exc}"}})
 
 
 def _json_or_text(raw: bytes) -> Any:

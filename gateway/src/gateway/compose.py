@@ -21,46 +21,49 @@ USAGE_RULES = "以下是与当前对话可能相关的记忆。只在相关时�
 class Recall:
     """一轮的全部召回结果。各节按固定顺序渲染,节内按记忆 ID 排序。"""
 
-    handoff: list[str] = field(default_factory=list)
-    surfaced: list[MemoryHit] = field(default_factory=list)
+    handoff: list[MemoryHit] = field(default_factory=list)
     lore: list[MemoryHit] = field(default_factory=list)
     facts: list[MemoryHit] = field(default_factory=list)
+    surfaced: list[MemoryHit] = field(default_factory=list)
     affect: list[MemoryHit] = field(default_factory=list)
     degraded_sources: list[str] = field(default_factory=list)
 
     def memory_ids(self) -> list[str]:
-        sections = (("surfaced", self.surfaced), ("lore", self.lore), ("fact", self.facts), ("affect", self.affect))
-        return [f"{name}:{hit.id}" for name, hits in sections for hit in hits]
+        return [f"{source}:{hit.id}" for source, _title, _ordered in _SECTIONS for hit in getattr(self, source)]
 
 
+# (来源, 标题, 是否保持原有顺序)。顺序固定:跨设备衔接 → 网关世界书 → 事实库 → 情感库(ADR-0003)。
+# 跨设备衔接保持对话的时间顺序;其余按记忆 ID 排序,保证同样的召回结果每次渲染一致。
 _SECTIONS = (
-    ("handoff", "刚才在另一台设备上的对话"),
-    ("surfaced", "心里还挂着的事"),
-    ("lore", "相关条目"),
-    ("facts", "相关事实"),
-    ("affect", "相关经历与感受"),
+    ("handoff", "刚才在另一台设备上的对话", True),
+    ("lore", "相关条目", False),
+    ("facts", "相关事实", False),
+    ("surfaced", "心里还挂着的事", False),
+    ("affect", "相关经历与感受", False),
 )
 
 
 def render_recall_block(recall: Recall) -> str:
     parts: list[str] = []
-    for attr, title in _SECTIONS:
-        items = getattr(recall, attr)
-        if not items:
-            continue
-        if attr == "handoff":
-            lines = list(items)
-        else:
-            lines = [f"- {hit.text}" for hit in sorted(items, key=lambda h: h.id)]
-        parts.append(f"## {title}\n" + "\n".join(lines))
+    for source, title, ordered in _SECTIONS:
+        hits: list[MemoryHit] = getattr(recall, source)
+        if hits:
+            shown = hits if ordered else sorted(hits, key=lambda h: h.id)
+            parts.append(f"## {title}\n" + "\n".join(f"- {h.text}" for h in shown))
     body = "\n\n".join(parts) if parts else PLACEHOLDER
     return f"<memory>\n{USAGE_RULES}\n\n{body}\n</memory>"
 
 
 def _strip(message: dict[str, Any], notice: str) -> dict[str, Any]:
     content = message.get("content")
-    if notice and message.get("role") == "assistant" and isinstance(content, str) and notice in content:
-        return {**message, "content": content.replace(notice, "")}
+    if not notice or message.get("role") != "assistant":
+        return message
+    if isinstance(content, str):
+        return {**message, "content": content.replace(notice.strip(), "").rstrip()}
+    if isinstance(content, list):
+        parts = [{**p, "text": p["text"].replace(notice.strip(), "").rstrip()}
+                 if isinstance(p, dict) and p.get("type") == "text" else p for p in content]
+        return {**message, "content": parts}
     return message
 
 

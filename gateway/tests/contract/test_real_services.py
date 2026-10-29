@@ -69,6 +69,20 @@ async def test_ombre_search_returns_parseable_ids_after_grow() -> None:
 
 
 @needs_ombre
+async def test_ombre_retried_grow_with_same_content_does_not_duplicate() -> None:
+    """写入队列重试时依赖 Ombre grow 的 30 分钟同内容去重。"""
+    store = _ombre()
+    marker = uuid.uuid4().hex[:8]
+    transcript = f"用户:今天去了{marker}公园散步\n大肥鱼:听起来很惬意"
+    await store.write_episode("contract", transcript)
+    await store.write_episode("contract", transcript)
+
+    [hit] = await store.recall(f"{marker}公园")
+
+    assert len(hit.id.split(",")) == 1
+
+
+@needs_ombre
 async def test_ombre_grow_succeeds_on_long_content_with_thinking_disabled() -> None:
     """长内容 grow 一直失败 = thinking 吃光了预算(Ombre CHANGELOG)。"""
     long = "\n".join(f"用户:第{i}件小事,今天天气不错\n大肥鱼:嗯嗯" for i in range(120))

@@ -52,6 +52,26 @@ def test_no_handoff_on_the_same_device(harness: Harness) -> None:
     assert "另一台设备" not in _block(harness)
 
 
+def test_no_handoff_when_the_latest_episode_was_on_this_device(harness: Harness) -> None:
+    harness.chat([{"role": "user", "content": "手机上聊的旧事"}], token=PHONE_TOKEN)
+    harness.clock.advance(minutes=31)
+    _talk_on_pc(harness, 2)
+    harness.clock.advance(minutes=31)
+
+    harness.chat([{"role": "user", "content": "电脑上又开一段"}])
+
+    assert "另一台设备" not in _block(harness)
+
+
+def test_handoff_turns_are_audited(harness: Harness) -> None:
+    _talk_on_pc(harness, 2)
+
+    harness.chat([{"role": "user", "content": "我到家了"}], token=PHONE_TOKEN)
+
+    handoff_ids = [i for i in harness.audit()[-1]["memory_ids"] if i.startswith("handoff:")]
+    assert len(handoff_ids) == 2
+
+
 def test_handoff_only_on_first_turn_of_the_phone_episode(harness: Harness) -> None:
     _talk_on_pc(harness, 2)
     harness.chat([{"role": "user", "content": "换手机了"}], token=PHONE_TOKEN)
