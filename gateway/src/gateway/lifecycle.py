@@ -79,6 +79,18 @@ class Lifecycle:
         """重新生成失败时撤销取代:用户看到的仍是原来那版回复。"""
         self._log.set_status(turn_id, PENDING)
 
+    def tool_round_of(self, device: str, companion: str, history: list[dict[str, Any]], start: int) -> Turn | None:
+        """history 以工具结果结尾时,找出它所属的那一轮:这台设备最近的待定轮,
+        且它开始的那条用户消息和之前的历史都对得上。找不到时返回 None,由调用方当作新的一轮。"""
+        prev = self.last_turn(device, companion)
+        if prev is None or prev.status != PENDING:
+            return None
+        if prev.user_text != message_text(history[start].get("content")):
+            return None
+        if prev.context_hash != context_hash(history[:start], self._notice):
+            return None
+        return prev
+
     def settle(self, turn: Turn) -> None:
         self._log.set_status(turn.id, SETTLED)
         self._log.enqueue(FACTS, turn.episode_id)

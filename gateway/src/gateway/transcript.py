@@ -27,7 +27,10 @@ CREATE TABLE IF NOT EXISTS turns (
     context_hash TEXT NOT NULL,
     user_text TEXT NOT NULL,
     assistant_text TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL
+    status TEXT NOT NULL,
+    recall_block TEXT NOT NULL DEFAULT '',
+    recall_reasons TEXT NOT NULL DEFAULT '{}',
+    recall_ids TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS episodes (
     id TEXT PRIMARY KEY,
@@ -54,7 +57,8 @@ CREATE TABLE IF NOT EXISTS audit (
     degraded_sources TEXT NOT NULL,
     degraded_reasons TEXT NOT NULL DEFAULT '{}',
     memory_ids TEXT NOT NULL,
-    latency_ms INTEGER NOT NULL
+    latency_ms INTEGER NOT NULL,
+    tool_calls TEXT NOT NULL DEFAULT '[]'
 );
 """
 
@@ -84,9 +88,16 @@ class TranscriptLog:
 
     def _migrate(self) -> None:
         """旧数据库补列。只加列,不改不删,已有数据原样保留。"""
-        columns = {r["name"] for r in self._db.execute("PRAGMA table_info(audit)")}
-        if "degraded_reasons" not in columns:
-            self._db.execute("ALTER TABLE audit ADD COLUMN degraded_reasons TEXT NOT NULL DEFAULT '{}'")
+        added = {
+            "audit": [("degraded_reasons", "TEXT NOT NULL DEFAULT '{}'"), ("tool_calls", "TEXT NOT NULL DEFAULT '[]'")],
+            "turns": [("recall_block", "TEXT NOT NULL DEFAULT ''"), ("recall_reasons", "TEXT NOT NULL DEFAULT '{}'"),
+                      ("recall_ids", "TEXT NOT NULL DEFAULT '[]'")],
+        }
+        for table, wanted in added.items():
+            columns = {r["name"] for r in self._db.execute(f"PRAGMA table_info({table})")}
+            for name, decl in wanted:
+                if name not in columns:
+                    self._db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     def open_turn(self, *, device: str, companion: str, episode_id: str, created_at: datetime,
                   context_hash: str, user_text: str) -> Turn:
@@ -102,6 +113,18 @@ class TranscriptLog:
     def complete_turn(self, turn_id: str, assistant_text: str) -> None:
         with self._lock:
             self._db.execute("UPDATE turns SET assistant_text = ? WHERE id = ?", (assistant_text, turn_id))
+
+    def save_recall(self, turn_id: str, block: str, reasons: dict[str, str], memory_ids: list[str]) -> None:
+        """一轮的召回块只算一次;同一轮后续的工具回合原样复用,保证缓存前缀不变。"""
+        with self._lock:
+            self._db.execute("UPDATE turns SET recall_block = ?, recall_reasons = ?, recall_ids = ? WHERE id = ?",
+                             (block, json.dumps(reasons, ensure_ascii=False), json.dumps(memory_ids), turn_id))
+
+    def saved_recall(self, turn_id: str) -> tuple[str, dict[str, str], list[str]]:
+        with self._lock:
+            row = self._db.execute("SELECT recall_block, recall_reasons, recall_ids FROM turns WHERE id = ?",
+                                   (turn_id,)).fetchone()
+        return row["recall_block"], json.loads(row["recall_reasons"]), json.loads(row["recall_ids"])
 
     def set_status(self, turn_id: str, status: str) -> None:
         with self._lock:
@@ -164,13 +187,16 @@ class TranscriptLog:
     # --- 审计 ---
 
     def record_audit(self, *, turn_id: str, device: str, created_at: datetime, outcome: str, upstream: str,
-                     degraded_reasons: dict[str, str], memory_ids: list[str], latency_ms: int) -> None:
+                     degraded_reasons: dict[str, str], memory_ids: list[str], latency_ms: int,
+                     tool_calls: list[str] | None = None) -> None:
+        """tool_calls 只记工具名;工具参数和结果不进审计,也不进记忆。"""
         with self._lock:
             self._db.execute(
                 "INSERT INTO audit (turn_id, device, created_at, outcome, upstream, degraded_sources,"
-                " degraded_reasons, memory_ids, latency_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " degraded_reasons, memory_ids, latency_ms, tool_calls) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (turn_id, device, created_at.isoformat(), outcome, upstream, json.dumps(sorted(degraded_reasons)),
-                 json.dumps(degraded_reasons, ensure_ascii=False), json.dumps(memory_ids), latency_ms),
+                 json.dumps(degraded_reasons, ensure_ascii=False), json.dumps(memory_ids), latency_ms,
+                 json.dumps(tool_calls or [])),
             )
 
     def audit_entries(self) -> list[dict[str, Any]]:
@@ -181,6 +207,7 @@ class TranscriptLog:
             entry = dict(r)
             entry["degraded_sources"] = json.loads(entry["degraded_sources"])
             entry["degraded_reasons"] = json.loads(entry["degraded_reasons"])
+            entry["tool_calls"] = json.loads(entry["tool_calls"])
             entry["memory_ids"] = json.loads(entry["memory_ids"])
             entry.pop("seq")
             out.append(entry)

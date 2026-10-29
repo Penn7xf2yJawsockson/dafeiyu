@@ -27,3 +27,5 @@ class Settings:
     # 后台循环:结束空闲的段、重试写入队列。测试关闭,改用 /admin/tick 手动推进
     background_worker: bool = True
     background_interval_seconds: float = 30.0
+    # 抓包开关:>0 时保留最近 N 次原始请求到 data_dir/debug(排查 Kelivo 实际发了什么)
+    debug_capture: int = 0

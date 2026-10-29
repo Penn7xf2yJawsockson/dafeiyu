@@ -9,8 +9,8 @@ from typing import Any
 
 import httpx
 
-OnDone = Callable[[str, bool], Awaitable[None]]
-"""回调(完整回复文本, 是否成功)。"""
+OnDone = Callable[[str, bool, list[str]], Awaitable[None]]
+"""回调(回复正文, 是否成功, 这次回复里模型要调用的工具名)。"""
 
 
 @dataclass(frozen=True)
@@ -33,11 +33,13 @@ async def open_stream(client: httpx.AsyncClient, payload: dict[str, Any]) -> htt
 
 
 async def relay_stream(response: httpx.Response, on_done: OnDone, notice: str = "") -> AsyncIterator[bytes]:
-    """逐行转发上游 SSE,同时累计回复正文。
+    """逐行转发上游 SSE,同时累计回复正文和模型要调用的工具名。
 
-    notice(降级标记)只给用户看:在带 finish_reason 的块之前插入,不计入回复正文。
+    notice(降级标记)只给用户看:插在最终回复的结束块之前,不计入回复正文;
+    模型这次是要调用工具(finish_reason=tool_calls)时不插,标记只出现在最终回复上。
     """
     parts: list[str] = []
+    tools: list[str] = []
     ok = False
     pending_notice = notice
     try:
@@ -47,22 +49,25 @@ async def relay_stream(response: httpx.Response, on_done: OnDone, notice: str = 
             data = line[6:]
             if data == "[DONE]":
                 ok = True
-                if pending_notice:
+                if pending_notice and not tools:
                     yield _notice_chunk(pending_notice)
                 yield b"data: [DONE]\n\n"
                 break
             chunk = json.loads(data)
             choices = chunk.get("choices", [])
-            if pending_notice and any(c.get("finish_reason") for c in choices):
-                for c in choices:
-                    parts.append((c.get("delta") or {}).get("content") or "")
+            for c in choices:
+                delta = c.get("delta") or {}
+                parts.append(delta.get("content") or "")
+                tools += [n for t in delta.get("tool_calls") or [] if (n := (t.get("function") or {}).get("name"))]
+            finishing = [c.get("finish_reason") for c in choices if c.get("finish_reason")]
+            if pending_notice and finishing and "tool_calls" not in finishing and not tools:
                 yield sse_data({**chunk, "choices": [{**c, "finish_reason": None} for c in choices]})
                 yield _notice_chunk(pending_notice)
                 pending_notice = ""
                 yield sse_data({**chunk, "choices": [{**c, "delta": {}} for c in choices]})
                 continue
-            for c in choices:
-                parts.append((c.get("delta") or {}).get("content") or "")
+            if finishing:
+                pending_notice = ""
             yield f"data: {data}\n\n".encode()
     except httpx.HTTPError as exc:
         ok = False
@@ -71,10 +76,11 @@ async def relay_stream(response: httpx.Response, on_done: OnDone, notice: str = 
                                   "type": "upstream_stream_interrupted"}})
     finally:
         await response.aclose()
-        await on_done("".join(parts), ok)
+        await on_done("".join(parts), ok, tools)
 
 
-async def complete(client: httpx.AsyncClient, payload: dict[str, Any]) -> tuple[str, dict[str, Any]] | UpstreamError:
+async def complete(client: httpx.AsyncClient,
+                   payload: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]] | UpstreamError:
     try:
         response = await client.post("/chat/completions", json=payload)
     except httpx.HTTPError as exc:
@@ -82,8 +88,9 @@ async def complete(client: httpx.AsyncClient, payload: dict[str, Any]) -> tuple[
     if response.status_code != 200:
         return UpstreamError(response.status_code, _json_or_text(response.content))
     body: dict[str, Any] = response.json()
-    text = body["choices"][0]["message"].get("content") or ""
-    return text, body
+    message = body["choices"][0]["message"]
+    tools = [n for t in message.get("tool_calls") or [] if (n := (t.get("function") or {}).get("name"))]
+    return message.get("content") or "", body, tools
 
 
 def sse_data(obj: dict[str, Any]) -> bytes:

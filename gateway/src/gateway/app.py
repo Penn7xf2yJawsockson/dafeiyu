@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hmac
+import json
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -17,7 +18,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from gateway import anthropic
 from gateway import upstream as up
-from gateway.compose import compose
+from gateway.compose import compose, render_recall_block, turn_start
 from gateway.config import Settings
 from gateway.lifecycle import Lifecycle, context_hash, message_text
 from gateway.recall import recall
@@ -42,6 +43,15 @@ def _read(settings: Settings, name: str) -> str:
 
 def _bearer(request: Request) -> str:
     return request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+
+
+_SAFE_HEADERS = ("user-agent", "content-type", "accept", "anthropic-version", "x-stainless-lang", "x-stainless-package-version")
+
+
+def _incoming(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    """抓包用:只留无害的请求头,Authorization / x-api-key 一律不存。"""
+    headers = {k: v for k, v in request.headers.items() if k.lower() in _SAFE_HEADERS}
+    return {"path": request.url.path, "headers": headers, "body": body}
 
 
 def _unauthorized() -> JSONResponse:
@@ -99,69 +109,101 @@ def create_app(
 
     app = FastAPI(title="dafeiyu-gateway", lifespan=lifespan)
 
-    async def run_turn(device: str, body: dict[str, Any]) -> TurnResult:
+    async def run_turn(device: str, body: dict[str, Any], incoming: dict[str, Any] | None = None) -> TurnResult:
         """一轮的完整处理。body 是 OpenAI Chat Completions 格式。
+
+        带工具的一轮会跨好几次请求(模型要调用工具 → Kelivo 回传工具结果 → …)。以工具结果结尾的请求
+        属于同一轮的「工具回合」:不新开一轮、不重新召回,原样复用这一轮的召回块;
+        只有用户说的话和最终回复写进原文日志里的这一轮,工具调用与工具结果不进记忆。
 
         从 resolve_previous 到 open_turn 之间没有 await,在单线程事件循环里天然不会与
         其他请求或后台扫描交错;改动这一段时不要在中间插入 await。
         """
         started = time.monotonic()
         history = [m for m in body.get("messages") or [] if m.get("role") != "system"]
-        if not history:
-            return up.UpstreamError(400, {"error": {"message": "messages must contain at least one message"}})
+        start = turn_start(history)
+        if start is None:
+            return up.UpstreamError(400, {"error": {"message": "messages must contain a user message"}})
         companion, now = settings.companion, clock.now()
 
-        superseded = life.resolve_previous(device, companion, history)
-        episode_id, first_turn = life.episode_for(device, companion, now)
-        handoff = life.handoff(device, companion, now) if first_turn else []
-        turn = log.open_turn(device=device, companion=companion, episode_id=episode_id, created_at=now,
-                             context_hash=context_hash(history[:-1], DEGRADED_NOTICE),
-                             user_text=message_text(history[-1].get("content")))
-        tick_soon()
+        tool_round = history[-1].get("role") == "tool"
+        turn = life.tool_round_of(device, companion, history, start) if tool_round else None
+        superseded: str | None = None
+        if turn is not None:
+            block, reasons, memory_ids = log.saved_recall(turn.id)
+        else:
+            tool_round = False  # 找不到所属的一轮(比如中途重启):当作新的一轮,从那条用户消息开始
+            superseded = life.resolve_previous(device, companion, history[: start + 1])
+            episode_id, first_turn = life.episode_for(device, companion, now)
+            handoff = life.handoff(device, companion, now) if first_turn else []
+            turn = log.open_turn(device=device, companion=companion, episode_id=episode_id, created_at=now,
+                                 context_hash=context_hash(history[:start], DEGRADED_NOTICE),
+                                 user_text=message_text(history[start].get("content")))
+            tick_soon()
+            recalled = await recall(query=turn.user_text, facts=fact_store, affect=affect_store,
+                                    timeout=settings.recall_timeout_seconds, surface=first_turn, lore=[],
+                                    handoff=handoff)
+            block, reasons, memory_ids = render_recall_block(recalled), recalled.degraded_reasons, recalled.memory_ids()
+            log.save_recall(turn.id, block, reasons, memory_ids)
 
-        recalled = await recall(query=turn.user_text, facts=fact_store, affect=affect_store,
-                                timeout=settings.recall_timeout_seconds, surface=first_turn, lore=[],
-                                handoff=handoff)
         system = "\n\n".join(p for p in (_read(settings, "persona.md"), _read(settings, "core_profile.md")) if p)
         payload = {**body, "model": settings.upstream_model,
-                   "messages": compose(system, history, recalled, DEGRADED_NOTICE)}
-        notice = DEGRADED_NOTICE if recalled.degraded_sources else ""
+                   "messages": compose(system, history, block, start, DEGRADED_NOTICE)}
+        notice = DEGRADED_NOTICE if reasons else ""
+        capture(incoming or {"body": body}, payload)
 
-        async def finish(text: str, ok: bool) -> None:
-            log.complete_turn(turn.id, text)
-            if not ok:
+        async def finish(text: str, ok: bool, tools: list[str]) -> None:
+            if ok and not tools:
+                log.complete_turn(turn.id, text)  # 最终回复
+            elif not ok and not tool_round:
+                log.complete_turn(turn.id, "")
                 log.set_status(turn.id, FAILED)
                 if superseded:
                     life.restore(superseded)
+            # 工具回合失败时这一轮保持待定:Kelivo 重试同一个工具回合还能接上
             log.record_audit(turn_id=turn.id, device=device, created_at=clock.now(),
                              outcome="ok" if ok else "failed", upstream=settings.upstream_base_url,
-                             degraded_reasons=recalled.degraded_reasons, memory_ids=recalled.memory_ids(),
+                             degraded_reasons=reasons, memory_ids=memory_ids, tool_calls=tools,
                              latency_ms=int((time.monotonic() - started) * 1000))
 
         if body.get("stream"):
             opened = await up.open_stream(client, payload)
             if isinstance(opened, up.UpstreamError):
-                await finish("", False)
+                await finish("", False, [])
                 return opened
             return up.relay_stream(opened, finish, notice)
 
         result = await up.complete(client, payload)
         if isinstance(result, up.UpstreamError):
-            await finish("", False)
+            await finish("", False, [])
             return result
-        text, raw = result
-        await finish(text, True)
-        if notice:
+        text, raw, tools = result
+        await finish(text, True, tools)
+        if notice and not tools:
             message = raw["choices"][0]["message"]
             message["content"] = (message.get("content") or "") + notice
         return raw
+
+    def capture(incoming: dict[str, Any], outgoing: dict[str, Any]) -> None:
+        """抓包开关(GATEWAY_DEBUG_CAPTURE=N):保留最近 N 次的原始请求与发给上游的请求,用于排查。
+        只写本机 data/ 下(不进 git);不含任何 Token 或密钥。"""
+        if settings.debug_capture <= 0:
+            return
+        folder = settings.data_dir / "debug"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{time.time_ns()}.json"
+        path.write_text(json.dumps({"at": clock.now().isoformat(), "incoming": incoming, "outgoing": outgoing},
+                                   ensure_ascii=False, indent=2), encoding="utf-8")
+        for old in sorted(folder.glob("*.json"))[: -settings.debug_capture]:
+            old.unlink(missing_ok=True)
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Any:
         device = settings.devices.get(_bearer(request))
         if device is None:
             return _unauthorized()
-        result = await run_turn(device, await request.json())
+        body = await request.json()
+        result = await run_turn(device, body, _incoming(request, body))
         if isinstance(result, up.UpstreamError):
             return JSONResponse(result.body, status_code=result.status_code)
         if isinstance(result, dict):
@@ -182,7 +224,7 @@ def create_app(
             return JSONResponse(anthropic.error(401, {"error": {"message": "unknown gateway token"}}), status_code=401)
         body = await request.json()
         model = body.get("model", settings.companion)
-        result = await run_turn(device, anthropic.to_openai(body))
+        result = await run_turn(device, anthropic.to_openai(body), _incoming(request, body))
         if isinstance(result, up.UpstreamError):
             return JSONResponse(anthropic.error(result.status_code, result.body), status_code=result.status_code)
         if isinstance(result, dict):

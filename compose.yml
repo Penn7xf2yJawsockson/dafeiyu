@@ -36,6 +36,7 @@ services:
     environment:
       GATEWAY_DEVICES: ${GATEWAY_DEVICES:?例如 pc=随机串A,phone=随机串B}
       GATEWAY_ADMIN_TOKEN: ${GATEWAY_ADMIN_TOKEN:?}
+      GATEWAY_DEBUG_CAPTURE: ${GATEWAY_DEBUG_CAPTURE:-0}   # 抓包:>0 时保留最近 N 次请求到 data/gateway/debug
       UPSTREAM_BASE_URL: ${UPSTREAM_BASE_URL:-https://api.deepseek.com}
       UPSTREAM_API_KEY: ${UPSTREAM_API_KEY:?}
       UPSTREAM_MODEL: ${UPSTREAM_MODEL:-deepseek-flash}

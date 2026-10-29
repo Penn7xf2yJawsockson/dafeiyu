@@ -72,12 +72,25 @@ def _strip(message: dict[str, Any], notice: str) -> dict[str, Any]:
     return message
 
 
-def compose(system: str, history: list[dict[str, Any]], recall: Recall, notice: str = "") -> list[dict[str, Any]]:
-    """history 的最后一条是本轮用户消息。notice 是降级标记,只给用户看,从历史里去掉后再发上游。"""
-    *earlier, latest = [_strip(m, notice) for m in history]
+def turn_start(history: list[dict[str, Any]]) -> int | None:
+    """本轮开始的那条用户消息的下标。带工具的一轮里,它后面还跟着模型的工具调用和工具结果。"""
+    for i in range(len(history) - 1, -1, -1):
+        if history[i].get("role") == "user":
+            return i
+    return None
+
+
+def compose(system: str, history: list[dict[str, Any]], block: str, start: int,
+            notice: str = "") -> list[dict[str, Any]]:
+    """召回块插在本轮开始的那条用户消息之前(ADR-0003 的深度 1)。
+
+    带工具的一轮,后续请求里召回块仍在同一位置、内容不变:工具结果紧跟着工具调用(协议要求),
+    缓存前缀也不动。notice 是降级标记,只给用户看,从历史里去掉后再发上游。
+    """
+    cleaned = [_strip(m, notice) for m in history]
     return [
         {"role": "system", "content": system},
-        *earlier,
-        {"role": "system", "content": render_recall_block(recall)},
-        latest,
+        *cleaned[:start],
+        {"role": "system", "content": block},
+        *cleaned[start:],
     ]
