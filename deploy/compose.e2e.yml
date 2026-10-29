@@ -15,7 +15,6 @@ services:
   gateway-e2e:
     extends: { file: compose.yml, service: gateway }
     profiles: ["e2e"]
-    network_mode: !reset null      # 自测网关不进 Tailscale,只在本机
     depends_on: !override
       hindsight: { condition: service_healthy }
       ombre-e2e: { condition: service_healthy }

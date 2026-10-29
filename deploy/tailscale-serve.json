@@ -1,0 +1,5 @@
+{
+  "TCP": {
+    "8080": { "TCPForward": "gateway:8080" }
+  }
+}
