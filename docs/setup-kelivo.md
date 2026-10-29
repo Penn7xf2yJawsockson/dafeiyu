@@ -2,6 +2,7 @@
 
 ## 1. 让手机能连上(只做一次)
 
+0. Tailscale 容器默认不启动。在 `.env` 里加一行 `COMPOSE_PROFILES=phone`,然后运行 `docker compose up -d`。
 1. 电脑 WSL 里运行 `docker compose logs tailscale | grep login.tailscale.com`,用浏览器打开最后那个链接,登录你的 Tailscale 账号。这台机器会以 **dafeiyu** 的名字加入你的私网。
    - 也可以在 Tailscale 后台生成一个 Auth Key,填进 `.env` 的 `TS_AUTHKEY=`,然后运行 `docker compose up -d tailscale`。
 2. 手机安装 Tailscale:Google Play、F-Droid,或 https://pkgs.tailscale.com/stable/ 下载 APK。用**同一个账号**登录。
