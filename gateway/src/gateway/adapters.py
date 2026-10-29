@@ -75,6 +75,11 @@ _BUCKET_HEAD = re.compile(r"^(?:\[[^\]\n]*\]\s*)*\[bucket_id:([0-9a-f]+)\][^\n]*
 _META_LINE = re.compile(r"^\s*(?:↳ .*|👣 .*|-{3,}|=== .* ===)\s*$")
 # 浮现放不下时 Ombre 附的提示是写给工具调用方的(「请提高 max_tokens 后重试」),不进召回块
 _BUDGET_NOTE = re.compile(r"\n*token 预算不足[:：].*$", re.S)
+# Dashboard「归档」生成的待审批删除申请,Ombre 附在浮现/检索结果最前面,是给能调用 trace 的 AI 看的审批单。
+# 它一直延续到第一个真正的桶开头那一行(该行不带 request_id)。
+_PENDING_DELETIONS = re.compile(
+    r"=== Pending human deletion requests.*?(?=^(?:\[(?!request_id:)[^\]\n]*\]\s*)*\[bucket_id:(?![^\n]*request_id)|\Z)",
+    re.S | re.M)
 
 
 def parse_ombre_result(text: str) -> list[MemoryHit]:
@@ -88,13 +93,16 @@ def parse_ombre_result(text: str) -> list[MemoryHit]:
     if match is not None:
         listed = json.loads(match.group(1)).get("bucket_ids", [])
         text = text[: match.start()]
-    text = _BUDGET_NOTE.sub("", text)
+    text = _BUDGET_NOTE.sub("", _PENDING_DELETIONS.sub("", text))
     heads = list(_BUCKET_HEAD.finditer(text))
     hits: list[MemoryHit] = []
     for i, head in enumerate(heads):
         bucket_id = head.group(1)
         chunk = text[head.end(): heads[i + 1].start() if i + 1 < len(heads) else len(text)]
         body = "\n".join(line for line in chunk.splitlines() if not _META_LINE.match(line)).strip()
+        archived = "已删除到档案" in head.group(0) or "已退出日常记忆" in head.group(0)
+        if archived:  # 检索仍会命中归档的桶并附恢复提示;归档就是不再让它出现
+            continue
         if body and (listed is None or bucket_id in listed) and all(h.id != bucket_id for h in hits):
             hits.append(MemoryHit(bucket_id, body))
     return hits

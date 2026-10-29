@@ -1,0 +1,23 @@
+# 管理模式:在电脑本机打开两个记忆库自带的网页界面,用来查看、修改、删除记忆。平时不用开。
+#
+# 打开(在仓库根目录):docker compose -f compose.yml -f deploy/compose.admin.yml up -d
+# 关闭:              docker compose up -d
+#
+# - Hindsight 控制台  http://127.0.0.1:9999   口令:.env 里的 HINDSIGHT_CP_ACCESS_KEY
+# - Ombre Dashboard   http://127.0.0.1:18001  密码:.env 里的 OMBRE_DASHBOARD_PASSWORD
+# 只绑 127.0.0.1:手机、局域网、Tailscale 私网都访问不到(ADR-0006)。
+# 说明见 docs/manage-memories.md。
+
+services:
+  hindsight:
+    ports:
+      - "127.0.0.1:9999:9999"
+    environment:
+      HINDSIGHT_CP_ACCESS_KEY: ${HINDSIGHT_CP_ACCESS_KEY:?管理模式需要在 .env 里设置 HINDSIGHT_CP_ACCESS_KEY}
+      # 控制台在容器内访问 Hindsight API,API 开了租户鉴权,要带同一个 Key
+      HINDSIGHT_CP_DATAPLANE_API_KEY: ${HINDSIGHT_API_KEY:?}
+
+  ombre:
+    ports:
+      # 同一个端口上还有 /mcp,它仍要求 OMBRE_MCP_TOKEN
+      - "127.0.0.1:18001:8000"   # 不用 8000:电脑上的 SillyTavern 默认占着它
