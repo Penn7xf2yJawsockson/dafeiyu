@@ -24,7 +24,7 @@ services:
       - ./data/gateway:/data
 
   hindsight:
-    image: ghcr.io/vectorize-io/hindsight:${HINDSIGHT_VERSION:-latest}
+    image: ghcr.io/vectorize-io/hindsight:${HINDSIGHT_VERSION:-1.1.0}
     restart: unless-stopped
     environment:
       HINDSIGHT_API_TENANT_EXTENSION: hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
@@ -44,7 +44,7 @@ services:
       - ./data/hindsight:/home/hindsight/.pg0
 
   ombre:
-    image: p0luz/ombre-brain:${OMBRE_VERSION:-latest}
+    image: p0luz/ombre-brain:${OMBRE_VERSION:-3.6.14}
     restart: unless-stopped
     environment:
       OMBRE_TRANSPORT: streamable-http
