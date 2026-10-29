@@ -1,0 +1,10 @@
+# 公开仓库:绝不提交密钥与任何记忆/对话数据
+.env
+.env.*
+!.env.example
+*.key
+data/
+transcripts/
+buckets/
+*.sqlite3
+*.db
