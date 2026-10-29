@@ -36,22 +36,32 @@ def _block(harness: Harness) -> str:
     return content
 
 
+def _head(harness: Harness) -> str:
+    """第一条 system:人设 / ↑角色定义 / 核心档案 / ↓角色定义。条目默认 position=0(↑角色定义)。"""
+    content: str = harness.upstream.last["messages"][0]["content"]
+    return content
+
+
+def _sent(harness: Harness) -> str:
+    return "\n".join(str(m.get("content")) for m in harness.upstream.last["messages"])
+
+
 # --- 世界书注入 ---
 
-def test_keyword_hit_puts_the_entry_into_the_recall_block(harness: Harness) -> None:
+def test_keyword_hit_injects_the_entry_after_the_persona(harness: Harness) -> None:
     _write_world(harness, "人物", {"key": ["阿澄"], "content": "阿澄是小鱼的大学室友,在杭州工作。"})
 
     harness.chat([_u("今天阿澄来找我了")])
 
-    block = _block(harness)
-    assert "## 相关条目\n- 阿澄是小鱼的大学室友" in block
+    assert _head(harness) == "你是大肥鱼。\n\n阿澄是小鱼的大学室友,在杭州工作。\n\n用户生日:3月14日。"
+    assert "阿澄" not in _block(harness)
     assert "lore:人物/0" in harness.audit()[-1]["memory_ids"]
 
 
 def test_no_keyword_no_injection(harness: Harness) -> None:
     _write_world(harness, "人物", {"key": ["阿澄"], "content": "阿澄是室友"})
     harness.chat([_u("今天天气不错")])
-    assert "相关条目" not in _block(harness)
+    assert "阿澄" not in _sent(harness)
 
 
 def test_lore_is_injected_even_on_a_degraded_turn(harness: Harness) -> None:
@@ -61,27 +71,27 @@ def test_lore_is_injected_even_on_a_degraded_turn(harness: Harness) -> None:
 
     harness.chat([_u("阿澄来了")])
 
-    assert "阿澄是室友" in _block(harness)
+    assert "阿澄是室友" in _head(harness)
     assert {"affect", "facts"} <= set(harness.audit()[-1]["degraded_sources"])
 
 
 def test_earlier_messages_within_scan_depth_also_trigger(harness: Harness) -> None:
     _write_world(harness, "人物", {"key": ["阿澄"], "content": "阿澄是室友"})
     harness.chat([_u("阿澄来了"), _a("真好"), _u("我们去吃饭了")])  # 默认往回看 2 条:不含第一条
-    assert "阿澄是室友" not in _block(harness)
+    assert "阿澄是室友" not in _head(harness)
     harness.chat([_u("阿澄来了"), _a("阿澄最近好吗"), _u("挺好")])
-    assert "阿澄是室友" in _block(harness)
+    assert "阿澄是室友" in _head(harness)
 
 
 def test_disabled_world_and_lore_settings(harness: Harness) -> None:
     _write_world(harness, "人物", {"key": ["阿澄"], "content": "阿澄是室友"})
     (harness.data_dir / "lore_settings.json").write_text('{"disabled_worlds": ["人物"]}', encoding="utf-8")
     harness.chat([_u("阿澄来了")])
-    assert "阿澄是室友" not in _block(harness)
+    assert "阿澄是室友" not in _head(harness)
 
     (harness.data_dir / "lore_settings.json").write_text('{"scan_depth": 3}', encoding="utf-8")
     harness.chat([_u("阿澄来了"), _a("真好"), _u("我们去吃饭了")])
-    assert "阿澄是室友" in _block(harness)
+    assert "阿澄是室友" in _head(harness)
 
 
 def test_broken_world_file_does_not_break_the_turn(harness: Harness) -> None:
@@ -91,15 +101,15 @@ def test_broken_world_file_does_not_break_the_turn(harness: Harness) -> None:
 
     resp = harness.chat([_u("猫呢")])
 
-    assert resp.status_code == 200 and "小鱼养猫" in _block(harness)
+    assert resp.status_code == 200 and "小鱼养猫" in _head(harness)
 
 
-def test_lore_section_sits_before_facts_and_keeps_order(harness: Harness) -> None:
+def test_entries_at_the_same_position_follow_order(harness: Harness) -> None:
     harness.facts.hits = [MemoryHit("f1", "用户住杭州")]
     _write_world(harness, "w", {"key": ["猫"], "content": "后", "order": 200}, {"key": ["猫"], "content": "前", "order": 5})
     harness.chat([_u("猫")])
-    block = _block(harness)
-    assert block.index("- 前") < block.index("- 后") < block.index("用户住杭州")
+    assert "你是大肥鱼。\n\n前\n后\n\n用户生日" in _head(harness)
+    assert "用户住杭州" in _block(harness)
 
 
 def test_tool_rounds_reuse_the_same_lore(harness: Harness) -> None:
@@ -272,4 +282,25 @@ def test_panel_edits_reach_the_next_turn(panel: Any) -> None:
                json={"content": _world({"key": ["阿澄"], "content": "阿澄是室友"})})
     client.post("/v1/chat/completions", json={"model": "dafeiyu", "messages": [_u("阿澄来了")]},
                 headers={"Authorization": "Bearer tok-pc"})
-    assert "阿澄是室友" in upstream.last["messages"][-2]["content"]
+    assert "阿澄是室友" in upstream.last["messages"][0]["content"]
+
+
+def test_preview_shows_where_persona_profile_and_entries_land(panel: Any) -> None:
+    client, data_dir, _ = panel
+    _login(client)
+    (data_dir / "core_profile.md").write_text("用户叫小鱼", encoding="utf-8")
+    client.put("/panel/api/doc?kind=world&name=w", headers=H,
+               json={"content": _world({"key": ["阿澄"], "content": "上", "comment": "上"},
+                                       {"key": ["阿澄"], "content": "深二", "position": 4, "depth": 2, "role": 1})})
+
+    r = client.post("/panel/api/lore-test", json={"messages": ["在吗", "在呢", "阿澄来了"]}).json()
+
+    assert [(m["role"], m["depth"], m["kind"]) for m in r["layout"]] == [
+        ("system", None, "系统提示开头:人设 → 世界书 ↑角色定义 → 核心档案"),
+        ("user", 2, "历史"),
+        ("user", 2, "世界书 @D2"),        # 深度 2:插在倒数第 2 条真实消息(「在呢」)之前
+        ("assistant", 1, "历史"),
+        ("system", 1, "召回块"),           # 深度 1:紧挨在用户这句话之前
+        ("user", 0, "本轮用户这句话")]
+    assert r["layout"][0]["content"] == "你是大肥鱼。\n\n上\n\n用户叫小鱼"
+    assert [e["where"] for e in r["entries"]] == ["↑角色定义", "@D2 用户"]

@@ -13,9 +13,14 @@
 - 递归:注入的条目正文可以再触发别的条目(excludeRecursion / preventRecursion / delayUntilRecursion)
 - order:数值大的优先占用预算,渲染时排在后面(更靠近用户这句话)
 
-网关没有「角色卡 / 作者注释 / 示例对话」,所以 position、depth、role 不改变注入位置:
-所有条目都进召回块的「相关条目」一节(ADR-0003)。这些字段原样保留,导回酒馆不丢。
-sticky / cooldown / delay、characterFilter、vectorized、automationId 同理:保留,但网关不用。
+注入位置(position)也按 SillyTavern 的含义落到网关的提示词里,见 place():
+
+- 0 ↑角色定义 / 1 ↓角色定义:系统提示里人设之后、核心档案前后(对应酒馆 worldInfoBefore / After)
+- 4 @D:插进历史,depth 从本轮用户这句话往前数(0 = 紧跟在它后面),role 为 系统 / 用户 / AI
+- 2 ↑作者注释 / 3 ↓作者注释:网关没有作者注释,按酒馆作者注释的默认位置放到 @D4 系统
+- 5 ↑示例 / 6 ↓示例:网关没有示例对话,并入 ↓角色定义
+- 7 outlet:不自动注入,只替换人设 / 核心档案里的 {{outlet::名字}}
+sticky / cooldown / delay、characterFilter、vectorized、automationId 网关不用,原样保留,导回酒馆不丢。
 """
 
 from __future__ import annotations
@@ -29,6 +34,10 @@ from typing import Any
 from gateway.stores import MemoryHit
 
 AND_ANY, NOT_ALL, NOT_ANY, AND_ALL = 0, 1, 2, 3
+BEFORE, AFTER, AN_TOP, AN_BOTTOM, AT_DEPTH, EM_TOP, EM_BOTTOM, OUTLET = range(8)
+ROLE_SYSTEM, ROLE_USER, ROLE_ASSISTANT = 0, 1, 2
+ROLES = {ROLE_SYSTEM: "system", ROLE_USER: "user", ROLE_ASSISTANT: "assistant"}
+DEFAULT_DEPTH = 4
 DEFAULT_ORDER, DEFAULT_WEIGHT = 100, 100
 MAX_RECURSION_STEPS = 5
 
@@ -243,3 +252,53 @@ def activate(entries: list[Entry], recent: list[str], s: LoreSettings,
 
 def render(entries: list[Entry], s: LoreSettings) -> list[MemoryHit]:
     return [MemoryHit(e.hit_id, _macros(str(e.get("content")), s).strip()) for e in entries]
+
+
+@dataclass
+class Placement:
+    """本轮世界书条目放在哪里。depth 键是 (深度, 角色),值是合并后的正文(同深度同角色合成一条,和酒馆一样)。"""
+
+    before: list[str] = field(default_factory=list)       # ↑角色定义
+    after: list[str] = field(default_factory=list)        # ↓角色定义(含 ↑↓示例)
+    depth: dict[tuple[int, int], str] = field(default_factory=dict)
+    outlets: dict[str, str] = field(default_factory=dict)
+    ids: list[str] = field(default_factory=list)          # 进审计的条目 ID(world/uid)
+
+    def fill_outlets(self, text: str) -> str:
+        return re.sub(r"\{\{outlet::(.+?)\}\}", lambda m: self.outlets.get(m.group(1).strip(), ""), text, flags=re.I)
+
+
+def place(entries: list[Entry], s: LoreSettings) -> Placement:
+    """activate() 的结果按 position 分配到各处。entries 已按 order 升序,同一处的正文按这个顺序拼接。"""
+    out = Placement()
+    grouped: dict[tuple[int, int], list[str]] = {}
+    outlets: dict[str, list[str]] = {}
+    for e in entries:
+        text = _macros(str(e.get("content")), s).strip()
+        if not text:
+            continue
+        position = int(e.get("position") or 0)
+        if position == OUTLET:
+            name = str(e.get("outletName") or "").strip()
+            if name:
+                outlets.setdefault(name, []).append(text)
+                out.ids.append(e.hit_id)
+            continue
+        out.ids.append(e.hit_id)
+        if position == BEFORE:
+            out.before.append(text)
+        elif position in (AFTER, EM_TOP, EM_BOTTOM):
+            out.after.append(text)
+        elif position in (AN_TOP, AN_BOTTOM):
+            grouped.setdefault((DEFAULT_DEPTH, ROLE_SYSTEM), []).append(text)
+        elif position == AT_DEPTH:
+            depth = e.get("depth")
+            role = e.get("role")
+            key = (max(0, int(depth if depth is not None else DEFAULT_DEPTH)),
+                   int(role) if role in ROLES else ROLE_SYSTEM)
+            grouped.setdefault(key, []).append(text)
+        else:
+            out.before.append(text)  # 不认识的位置当 ↑角色定义,不丢内容
+    out.depth = {k: "\n".join(v) for k, v in grouped.items()}
+    out.outlets = {k: "\n".join(v) for k, v in outlets.items()}
+    return out

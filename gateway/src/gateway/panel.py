@@ -21,7 +21,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from gateway.curated import LORE_SETTINGS, PERSONA, PROFILE, CuratedError, CuratedStore, world_path
-from gateway.lorebook import LoreSettings, activate, entries_of, render
+from gateway.compose import compose, system_head
+from gateway.lorebook import LoreSettings, activate, entries_of, place, render
 
 COOKIE = "dafeiyu_panel"
 SESSION_SECONDS = 7 * 24 * 3600
@@ -166,14 +167,76 @@ def register_panel(app: FastAPI, store: CuratedStore, password: str, lore_defaul
 
     @app.post("/panel/api/lore-test")
     async def lore_test(request: Request) -> Response:
-        """试匹配:贴一段对话,看哪些条目会被注入。概率和互斥组取固定的随机数,结果可复现。"""
+        """注入预览:贴一段对话(最后一条当作本轮用户这句话),返回发给上游的完整消息排布和命中的条目。
+        概率和互斥组取固定的随机数,结果可复现。召回块用占位文字代替(真实内容取决于记忆库)。"""
         if err := guard(request):
             return err
         body = await request.json()
-        recent = [str(m) for m in body.get("messages", []) if str(m).strip()]
+        lines = [str(m) for m in body.get("messages", []) if str(m).strip()]
+        if not lines:
+            return JSONResponse({"entries": [], "layout": []})
         settings = store.lore_settings(lore_defaults)
         rng = random.Random(0)
-        chosen = activate(entries_of(store.worlds()), recent, settings, rand=rng.random)
+        chosen = activate(entries_of(store.worlds()), lines, settings, rand=rng.random)
+        placement = place(chosen, settings)
+        # 对话按「最后一条是用户」往前交替排
+        history = [{"role": "user" if (len(lines) - 1 - i) % 2 == 0 else "assistant", "content": t}
+                   for i, t in enumerate(lines)]
+        start = len(history) - 1
+        persona = placement.fill_outlets(store.text(PERSONA))
+        profile = placement.fill_outlets(store.text(PROFILE))
+        head = system_head(persona, profile, placement.before, placement.after)
+        messages = compose([head, ""], history, RECALL_PLACEHOLDER, start, depth=placement.depth)
+        depth_text = {text: key for key, text in placement.depth.items()}
+        user_at = next(i for i, m in enumerate(messages) if m.get("content") == RECALL_PLACEHOLDER) + 1
+        layout: list[dict[str, Any]] = []
+        injected: set[int] = set()
+        for i, m in enumerate(messages):
+            content = str(m.get("content") or "")
+            if i == 0:
+                parts = [("人设", persona), ("世界书 ↑角色定义", "\n".join(placement.before)),
+                         ("核心档案", profile), ("世界书 ↓角色定义", "\n".join(placement.after))]
+                kind = "系统提示开头:" + " → ".join(name for name, text in parts if text)
+            elif content == RECALL_PLACEHOLDER:
+                kind = "召回块"
+                injected.add(i)
+            elif content in depth_text and m["role"] == _ROLE[depth_text[content][1]]:
+                kind = f"世界书 @D{depth_text[content][0]}"
+                injected.add(i)
+            elif i == user_at:
+                kind = "本轮用户这句话"
+            else:
+                kind = "历史"
+            layout.append({"role": m["role"], "kind": kind, "content": content})
+        # 深度按酒馆的数法:真实的对话消息从用户这句话(0)往前数;注入的条目标它自己设定的深度,召回块是 1
+        for i, item in enumerate(layout):
+            if i == 0:
+                item["depth"] = None
+            elif i in injected:
+                item["depth"] = 1 if item["kind"] == "召回块" else int(item["kind"].removeprefix("世界书 @D"))
+            elif i >= user_at:
+                item["depth"] = 0
+            else:
+                item["depth"] = sum(1 for j in range(i + 1, user_at + 1) if j not in injected)
         hits = render(chosen, settings)
-        return JSONResponse({"entries": [{"id": h.id, "comment": e.get("comment"), "text": h.text,
-                                          "constant": bool(e.get("constant"))} for h, e in zip(hits, chosen, strict=True)]})
+        return JSONResponse({
+            "entries": [{"id": h.id, "comment": e.get("comment"), "text": h.text, "constant": bool(e.get("constant")),
+                         "where": _where(e)} for h, e in zip(hits, chosen, strict=True)],
+            "layout": layout})
+
+
+RECALL_PLACEHOLDER = "<memory>(召回块:当前时间、跨设备衔接、相关事实、心里还挂着的事、相关经历与感受。内容来自记忆库,预览里不展开)</memory>"
+_ROLE = {0: "system", 1: "user", 2: "assistant"}
+_POSITIONS = {0: "↑角色定义", 1: "↓角色定义", 2: "↑作者注释(@D4 系统)", 3: "↓作者注释(@D4 系统)",
+              5: "↑示例(↓角色定义)", 6: "↓示例(↓角色定义)", 7: "outlet"}
+
+
+def _where(e: Any) -> str:
+    position = int(e.get("position") or 0)
+    if position == 4:
+        depth = e.get("depth")
+        role = {0: "系统", 1: "用户", 2: "AI"}.get(e.get("role"), "系统")
+        return f"@D{depth if depth is not None else 4} {role}"
+    if position == 7:
+        return f"outlet「{e.get('outletName') or ''}」"
+    return _POSITIONS.get(position, "↑角色定义")

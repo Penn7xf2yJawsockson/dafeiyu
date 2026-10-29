@@ -53,7 +53,7 @@ dialog { border:1px solid var(--line); border-radius:8px; background:var(--card)
   <button class="tab" data-tab="profile">核心档案</button>
   <button class="tab" data-tab="worlds">世界书</button>
   <button class="tab" data-tab="settings">世界书设置</button>
-  <button class="tab" data-tab="test">试匹配</button>
+  <button class="tab" data-tab="test">注入预览</button>
   <span class="sp"></span>
   <button id="logoutBtn">退出</button>
 </header>
@@ -80,7 +80,7 @@ dialog { border:1px solid var(--line); border-radius:8px; background:var(--card)
           <button data-history="world" disabled id="worldHist">历史版本</button>
           <button class="danger" id="worldDelete" disabled>删除这本</button></div>
         <div class="row"><input id="entryFilter" placeholder="筛选:关键词 / 备注 / 内容" style="flex:1"></div>
-        <table><thead><tr><th>启用</th><th>备注</th><th>主关键词</th><th>常驻</th><th>顺序</th><th>概率</th><th></th></tr></thead>
+        <table><thead><tr><th>启用</th><th>备注</th><th>主关键词</th><th>位置</th><th>常驻</th><th>顺序</th><th>概率</th><th></th></tr></thead>
           <tbody id="entryRows"></tbody></table>
       </div>
       <div class="card hidden" id="entryEditor">
@@ -94,6 +94,16 @@ dialog { border:1px solid var(--line); border-radius:8px; background:var(--card)
           <label class="f">次关键词逻辑 selectiveLogic<select data-f="selectiveLogic" data-num>
             <option value="0">与任一 AND ANY</option><option value="3">与全部 AND ALL</option>
             <option value="2">非任一 NOT ANY</option><option value="1">非全部 NOT ALL</option></select></label>
+          <label class="f">插入位置 position<select data-f="position" data-num id="posSel">
+            <option value="0">↑角色定义</option><option value="1">↓角色定义</option>
+            <option value="4">@D 按深度插入对话</option>
+            <option value="2">↑作者注释(网关按 @D4 系统)</option><option value="3">↓作者注释(网关按 @D4 系统)</option>
+            <option value="5">↑示例(网关并入 ↓角色定义)</option><option value="6">↓示例(网关并入 ↓角色定义)</option>
+            <option value="7">outlet(只替换 {{outlet::名字}})</option></select></label>
+          <label class="f depthOnly">插入深度 depth(0 = 紧跟用户这句话之后)<input data-f="depth" data-num type="number" min="0"></label>
+          <label class="f depthOnly">以谁的身份 role<select data-f="role" data-num>
+            <option value="0">系统</option><option value="1">用户</option><option value="2">AI</option></select></label>
+          <label class="f outletOnly">outlet 名字 outletName<input data-f="outletName"></label>
           <label class="f">顺序 order(大的更靠后、优先占预算)<input data-f="order" data-num type="number"></label>
           <label class="f">概率 probability(%)<input data-f="probability" data-num type="number" min="0" max="100"></label>
           <label class="f">扫描深度 scanDepth(空 = 用全局)<input data-f="scanDepth" data-num data-null type="number" min="0"></label>
@@ -114,7 +124,8 @@ dialog { border:1px solid var(--line); border-radius:8px; background:var(--card)
           <label><input type="checkbox" data-f="preventRecursion" data-bool> 不触发递归</label>
         </div>
         <label class="f">内容 content(支持 {{user}} {{char}})<textarea data-f="content" rows="8"></textarea></label>
-        <p class="muted">酒馆里的「插入位置 / 深度 / 角色 / 粘性 / 冷却 / 角色过滤」等字段会原样保留,导回酒馆不丢;网关里所有条目都放进召回块的「相关条目」。</p>
+        <p class="muted">插入位置与酒馆含义相同;网关没有作者注释和示例对话,对应的位置按上面括号里的方式处理。「粘性 / 冷却 / 延迟 / 角色过滤」网关不用,原样保留,导回酒馆不丢。<br>
+          缓存提示:↑↓角色定义在系统提示开头,条目一命中、一不命中,整段缓存都会失效;关键词触发的条目放 @D 更省。</p>
       </div>
     </div>
   </div></section>
@@ -135,9 +146,9 @@ dialog { border:1px solid var(--line); border-radius:8px; background:var(--card)
   </div></section>
 
   <section id="tab-test" class="hidden"><div class="card">
-    <div class="row"><b>试匹配</b><span class="muted">每行一条消息,最后一行当作用户这一轮说的话。概率和互斥组用固定随机数,结果可复现。</span></div>
-    <textarea id="testText" rows="6" placeholder="今天阿澄来找我了"></textarea>
-    <div class="row"><button class="primary" id="testRun">看看会注入什么</button></div>
+    <div class="row"><b>注入预览</b><span class="muted">每行一条消息,自下而上交替为 用户 / AI,最后一行是用户这一轮说的话。显示发给上游的完整排布;概率和互斥组用固定随机数,结果可复现。</span></div>
+    <textarea id="testText" rows="6" placeholder="在吗&#10;在呢&#10;今天阿澄来找我了"></textarea>
+    <div class="row"><button class="primary" id="testRun">预览</button></div>
     <div id="testOut"></div>
   </div></section>
 </main>
@@ -246,6 +257,14 @@ async function openWorld(name) {
   document.querySelectorAll("#worldList .item").forEach((n) => n.classList.toggle("on", n.children[1].textContent === name));
 }
 const entriesOf = () => Object.values((world && world.data.entries) || {});
+const POS = { 0: "↑角色", 1: "↓角色", 2: "↑注释", 3: "↓注释", 5: "↑示例", 6: "↓示例", 7: "outlet" };
+const ROLE = { 0: "系统", 1: "用户", 2: "AI" };
+const whereOf = (e) => Number(e.position) === 4 ? "@D" + (e.depth ?? 4) + " " + (ROLE[e.role] || "系统") : (POS[e.position ?? 0] || "↑角色");
+function syncPositionFields() {
+  const v = $("posSel").value;
+  document.querySelectorAll(".depthOnly").forEach((n) => n.classList.toggle("hidden", v !== "4"));
+  document.querySelectorAll(".outletOnly").forEach((n) => n.classList.toggle("hidden", v !== "7"));
+}
 const keysText = (v) => Array.isArray(v) ? v.join(", ") : (v || "");
 function renderEntries() {
   const f = $("entryFilter").value.trim().toLowerCase();
@@ -257,7 +276,7 @@ function renderEntries() {
     const on = el("input", { type: "checkbox", checked: !e.disable, on: { change: () => { e.disable = !on.checked; saveWorld(); renderEntries(); } } });
     rows.append(el("tr", { className: e.disable ? "off" : "" },
       el("td", {}, on), el("td", { text: e.comment || "" }), el("td", { text: keysText(e.key) }),
-      el("td", { text: e.constant ? "常驻" : "" }), el("td", { text: String(e.order ?? 100) }),
+      el("td", { text: whereOf(e) }), el("td", { text: e.constant ? "常驻" : "" }), el("td", { text: String(e.order ?? 100) }),
       el("td", { text: (e.useProbability === false ? 100 : (e.probability ?? 100)) + "%" }),
       el("td", {}, el("button", { text: "编辑", on: { click: () => openEditor(String(e.uid)) } }))));
   }
@@ -275,11 +294,13 @@ function openEditor(uid) {
     else if ("tri" in n.dataset) n.value = v === true ? "true" : v === false ? "false" : "";
     else n.value = v ?? "";
   });
+  syncPositionFields();
   $("entryEditor").classList.remove("hidden");
   $("entryEditor").scrollIntoView({ behavior: "smooth" });
 }
 function closeEditor() { editing = null; $("entryEditor").classList.add("hidden"); }
 $("entryCancel").onclick = closeEditor;
+$("posSel").onchange = syncPositionFields;
 $("entrySave").onclick = async () => {
   const e = world.data.entries[editing];
   document.querySelectorAll("#entryEditor [data-f]").forEach((n) => {
@@ -301,7 +322,7 @@ $("entryNew").onclick = () => {
   const uids = entriesOf().map((e) => Number(e.uid)).filter((n) => !isNaN(n));
   const uid = String(uids.length ? Math.max(...uids) + 1 : 0);
   world.data.entries ||= {};
-  world.data.entries[uid] = { uid: Number(uid), key: [], keysecondary: [], comment: "", content: "", order: 100, probability: 100, useProbability: true, selective: true, selectiveLogic: 0 };
+  world.data.entries[uid] = { uid: Number(uid), key: [], keysecondary: [], comment: "", content: "", order: 100, probability: 100, useProbability: true, selective: true, selectiveLogic: 0, position: 0, depth: 4, role: 0 };
   renderEntries(); openEditor(uid);
 };
 async function saveWorld() {
@@ -358,10 +379,17 @@ $("testRun").onclick = async () => {
   const messages = $("testText").value.split("\n").filter((s) => s.trim());
   const out = $("testOut"); out.replaceChildren();
   const r = await api("POST", "lore-test", { messages });
+  out.append(el("h3", { text: "发给上游的消息(从上到下)" }));
+  const t = el("table", {}, el("thead", {}, el("tr", {}, ...["#", "角色", "深度", "这是什么", "内容"].map((h) => el("th", { text: h })))));
+  const tb = el("tbody"); t.append(tb);
+  r.layout.forEach((m, i) => tb.append(el("tr", {}, el("td", { text: String(i + 1) }), el("td", { text: m.role }),
+    el("td", { text: m.depth === null ? "最前" : String(m.depth) }), el("td", { text: m.kind }),
+    el("td", {}, el("pre", { text: m.content.length > 600 ? m.content.slice(0, 600) + "……" : m.content })))));
+  out.append(t, el("p", { className: "muted", text: "深度从本轮用户这句话往前数:0 = 用户这句话(以及紧跟其后的 @D0),1 = 紧挨在它前面。人设和核心档案在第 1 条,位于全部历史之前,不随对话长度变化。" }));
+  out.append(el("h3", { text: "本轮命中的世界书条目" }));
   if (!r.entries.length) { out.append(el("p", { className: "muted", text: "没有条目会被注入" })); return; }
-  out.append(el("p", { className: "muted", text: "会按这个顺序放进召回块的「相关条目」:" }));
   for (const e of r.entries) out.append(el("div", { className: "card" },
-    el("div", { className: "row" }, el("b", { text: e.comment || e.id }), el("span", { className: "muted", text: e.id + (e.constant ? " · 常驻" : "") })),
+    el("div", { className: "row" }, el("b", { text: e.comment || e.id }), el("span", { className: "muted", text: e.id + " · " + e.where + (e.constant ? " · 常驻" : "") })),
     el("pre", { text: e.text })));
 };
 

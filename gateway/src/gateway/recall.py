@@ -26,7 +26,7 @@ async def _guarded(name: str, call: Awaitable[list[MemoryHit]], timeout: float,
 
 
 async def recall(*, query: str, facts: MemoryStore, affect: MemoryStore, timeout: float,
-                 surface: bool, handoff: list[MemoryHit], lore: list[MemoryHit]) -> Recall:
+                 surface: bool, handoff: list[MemoryHit]) -> Recall:
     reasons: dict[str, str] = {}
     jobs = [
         _guarded("facts", facts.recall(query), timeout, reasons),
@@ -41,7 +41,6 @@ async def recall(*, query: str, facts: MemoryStore, affect: MemoryStore, timeout
     return Recall(
         handoff=handoff,
         surfaced=surfaced,
-        lore=lore,
         facts=results[0],
         affect=[h for h in results[1] if h.id not in seen],
         degraded_reasons=dict(sorted(reasons.items())),

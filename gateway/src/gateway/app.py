@@ -7,6 +7,7 @@ import contextlib
 import hmac
 import json
 import logging
+import random
 import time
 from collections.abc import AsyncIterator
 from datetime import datetime
@@ -19,11 +20,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from gateway import anthropic
 from gateway import upstream as up
 from gateway.background import is_background, is_compress, is_client_context
-from gateway.compose import compose, local_time_line, render_recall_block, turn_start
+from gateway.compose import compose, local_time_line, render_recall_block, system_head, turn_start
 from gateway.config import Settings
 from gateway.curated import PERSONA, PROFILE, CuratedStore
 from gateway.lifecycle import Lifecycle, context_hash, message_text
-from gateway.lorebook import LoreSettings, activate, entries_of, render
+from gateway.lorebook import LoreSettings, Placement, activate, entries_of, place
 from gateway.panel import register_panel
 from gateway.recall import recall
 from gateway.stores import MemoryStore
@@ -69,17 +70,19 @@ def create_app(
     curated = CuratedStore(settings.data_dir, clock)
     lore_defaults = LoreSettings()
 
-    def lore_for(history: list[dict[str, Any]], start: int) -> list[Any]:
-        """网关世界书:扫描本轮用户这句话及之前的消息(不含工具回合与客户端注入的上下文)。
-        确定性注入,不经过召回超时,降级轮照样有(工单 09)。读不了世界书时这一轮不注入,不影响回复。"""
+    def lore_for(history: list[dict[str, Any]], start: int, turn_id: str) -> Placement:
+        """网关世界书:扫描本轮用户这句话及之前的消息(不含工具回合与客户端注入的上下文),按条目的注入位置分配。
+        确定性注入,不经过召回超时,降级轮照样有(工单 09)。概率与互斥组用这一轮的 ID 做种子:同一轮的
+        工具回合重算结果相同,缓存前缀不变。读不了世界书时这一轮不注入,不影响回复。"""
         try:
             recent = [message_text(m.get("content")) for m in history[: start + 1]
                       if m.get("role") in ("user", "assistant")]
             settings_ = curated.lore_settings(lore_defaults)
-            return render(activate(entries_of(curated.worlds()), recent, settings_), settings_)
+            rng = random.Random(turn_id)
+            return place(activate(entries_of(curated.worlds()), recent, settings_, rand=rng.random), settings_)
         except Exception:
             logger.exception("网关世界书匹配失败,本轮不注入")
-            return []
+            return Placement()
     life = Lifecycle(settings, log, fact_store, affect_store, notice=DEGRADED_NOTICE)
     drain_lock = asyncio.Lock()
     direct_model = f"{settings.companion}-direct"  # 无记忆直通:给标题生成、酒馆、Agent 等用
@@ -158,6 +161,7 @@ def create_app(
         superseded: str | None = None
         if turn is not None:
             block, reasons, memory_ids = log.saved_recall(turn.id)
+            lore = lore_for(history, start, turn.id)
         else:
             tool_round = False  # 找不到所属的一轮(比如中途重启):当作新的一轮,从那条用户消息开始
             superseded = life.resolve_previous(device, companion, history[: start + 1])
@@ -169,16 +173,19 @@ def create_app(
             tick_soon()
             recalled = await recall(query=turn.user_text, facts=fact_store, affect=affect_store,
                                     timeout=settings.recall_timeout_seconds, surface=first_turn,
-                                    lore=lore_for(history, start),
                                     handoff=handoff)
             block = render_recall_block(recalled, local_time_line(now, settings.timezone))
-            reasons, memory_ids = recalled.degraded_reasons, recalled.memory_ids()
+            lore = lore_for(history, start, turn.id)
+            reasons = recalled.degraded_reasons
+            memory_ids = recalled.memory_ids() + [f"lore:{i}" for i in lore.ids]
             log.save_recall(turn.id, block, reasons, memory_ids)
 
-        system = "\n\n".join(p for p in (curated.text(PERSONA), curated.text(PROFILE)) if p)
+        head = system_head(lore.fill_outlets(curated.text(PERSONA)), lore.fill_outlets(curated.text(PROFILE)),
+                           lore.before, lore.after)
+        segments = [head, client_system]
         payload = {**body, "model": settings.upstream_model,
-                   "messages": compose(system, client_system, full, block,
-                                       next(i for i, m in enumerate(full) if m is history[start]), DEGRADED_NOTICE)}
+                   "messages": compose(segments, full, block, next(i for i, m in enumerate(full) if m is history[start]),
+                                       DEGRADED_NOTICE, depth=lore.depth)}
         notice = DEGRADED_NOTICE if reasons else ""
         capture(incoming or {"body": body}, payload)
 
