@@ -103,6 +103,20 @@ async def test_ombre_surface_without_query_returns_parseable_ids() -> None:
 
 
 @needs_ombre
+async def test_ombre_archived_memory_is_not_recalled() -> None:
+    """deploy/ombre-archive.sh 用 trace(delete=True) 归档;Ombre 检索仍会命中归档桶,网关要跳过它。"""
+    store = _ombre()
+    marker = uuid.uuid4().hex[:8]
+    await store.write_episode("contract", f"用户:我养了一只叫{marker}的猫\n大肥鱼:好可爱")
+    ids = [h.id for h in await store.recall(f"{marker} 猫")]
+    assert ids
+    for bucket_id in ids:
+        await store._call("trace", {"bucket_id": bucket_id, "delete": True})
+
+    assert not [h for h in await store.recall(f"{marker} 猫") if h.id in ids]
+
+
+@needs_ombre
 async def test_ombre_retried_grow_with_same_content_does_not_duplicate() -> None:
     """写入队列重试时依赖 Ombre grow 的 30 分钟同内容去重。"""
     store = _ombre()
