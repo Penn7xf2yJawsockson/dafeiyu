@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from gateway import anthropic
 from gateway import upstream as up
-from gateway.background import is_background
+from gateway.background import is_background, is_compress
 from gateway.compose import compose, local_time_line, render_recall_block, turn_start
 from gateway.config import Settings
 from gateway.lifecycle import Lifecycle, context_hash, message_text
@@ -121,6 +121,10 @@ def create_app(
         从 resolve_previous 到 open_turn 之间没有 await,在单线程事件循环里天然不会与
         其他请求或后台扫描交错;改动这一段时不要在中间插入 await。
         """
+        if is_compress(body):
+            # 压缩上下文:模型马上要看不到前面的原文,先把这一段写进两个记忆库(后台进行,不拖慢压缩)
+            life.close_current_episode(device, settings.companion, clock.now())
+            tick_soon()
         if body.get("model") == direct_model or is_background(body):
             return await passthrough(body, incoming)
         started = time.monotonic()

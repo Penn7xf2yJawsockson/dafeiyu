@@ -21,11 +21,23 @@ KELIVO_BACKGROUND_PROMPTS = (
 )
 
 
-def is_background(body: dict[str, Any]) -> bool:
-    """系统消息或最后一条用户消息以 Kelivo 后台任务的默认提示词开头。"""
+KELIVO_COMPRESS_PROMPT = "Summarize the following conversation history so the conversation can continue"
+
+
+def _candidates(body: dict[str, Any]) -> list[str]:
     messages = body.get("messages") or []
-    candidates = [m for m in messages if m.get("role") == "system"]
+    picked = [m for m in messages if m.get("role") == "system"]
     users = [m for m in messages if m.get("role") == "user"]
     if users:
-        candidates.append(users[-1])
-    return any(message_text(m.get("content")).lstrip().startswith(KELIVO_BACKGROUND_PROMPTS) for m in candidates)
+        picked.append(users[-1])
+    return [message_text(m.get("content")).lstrip() for m in picked]
+
+
+def is_compress(body: dict[str, Any]) -> bool:
+    """Kelivo 的「压缩上下文」请求(默认提示词)。网关借此在压缩前把这一段记忆写完。"""
+    return any(text.startswith(KELIVO_COMPRESS_PROMPT) for text in _candidates(body))
+
+
+def is_background(body: dict[str, Any]) -> bool:
+    """系统消息或最后一条用户消息以 Kelivo 后台任务的默认提示词开头。"""
+    return any(text.startswith(KELIVO_BACKGROUND_PROMPTS) for text in _candidates(body))

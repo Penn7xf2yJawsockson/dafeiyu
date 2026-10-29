@@ -126,6 +126,13 @@ class Lifecycle:
         episode = [t for t in turns if t.episode_id == latest.episode_id][-self._s.handoff_turns:]
         return [MemoryHit(t.id, render_transcript([t])) for t in episode]
 
+    def close_current_episode(self, device: str, companion: str, now: datetime) -> None:
+        """立刻结束这台设备当前的段(Kelivo 压缩上下文时):待定轮全部确定,写入两个记忆库。
+        下一条消息会开新段,于是重新浮现情感记忆,补上压缩后模型看不到的上下文。"""
+        prev = self.last_turn(device, companion)
+        if prev is not None and self._log.episode_closed_at(prev.episode_id) is None:
+            self.close_episode(prev.episode_id, now)
+
     def close_episode(self, episode_id: str, now: datetime) -> None:
         for t in self._log.turns("episode_id = ? AND status = ?", (episode_id, PENDING)):
             self.settle(t)

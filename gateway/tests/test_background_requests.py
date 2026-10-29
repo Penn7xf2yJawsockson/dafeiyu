@@ -45,8 +45,10 @@ def test_kelivo_background_requests_never_become_turns(harness: Harness, kind: s
 
     assert harness.upstream.last["messages"] == [{"role": "user", "content": prompt}]
     [turn] = harness.turns()
-    assert turn["user_text"] == "我叫小鱼" and turn["status"] == "pending"  # 后台请求不影响正在进行的那一轮
+    assert turn["user_text"] == "我叫小鱼"
     assert harness.facts.queries == ["我叫小鱼"]
+    # 后台请求不影响正在进行的那一轮;只有压缩上下文例外:它会先确定并写完这一段(test_compress_sync)
+    assert turn["status"] == ("settled" if kind == "压缩" else "pending")
 
 
 def test_ordinary_message_mentioning_summaries_is_still_a_turn(harness: Harness) -> None:
