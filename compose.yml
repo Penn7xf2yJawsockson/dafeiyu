@@ -3,15 +3,37 @@
 # 用法:cp .env.example .env && 填好密钥 && docker compose up -d
 
 services:
+  # 手机入口(ADR-0006):网关加入这个容器的网络,手机经 Tailscale 私网访问 http://dafeiyu:8080。
+  # 只有网关在这个网络里;不发布子网路由,两个记忆库从私网不可达。
+  # 首次登录:docker compose logs tailscale 里打开登录链接;或在 .env 里填 TS_AUTHKEY。
+  tailscale:
+    image: tailscale/tailscale:${TAILSCALE_VERSION:-v1.104.4}
+    hostname: dafeiyu
+    restart: unless-stopped
+    environment:
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_HOSTNAME: dafeiyu
+      TS_USERSPACE: "false"
+      TS_ACCEPT_DNS: "false"        # 保留 Docker 内置 DNS,网关才能解析 hindsight / ombre
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+      TS_AUTH_ONCE: "true"
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    volumes:
+      - ./data/tailscale:/var/lib/tailscale
+    # 电脑上的 Kelivo 走本机地址;网关共用本容器网络,所以端口发布在这里
+    ports:
+      - "127.0.0.1:${GATEWAY_HOST_PORT:-18080}:8080"
+
   gateway:
     build: ./gateway
     restart: unless-stopped
+    network_mode: service:tailscale
     # 两个记忆库健康后才启动网关,避免开机后头几轮因记忆库还没起来而被标成降级
     depends_on:
+      tailscale: { condition: service_started }
       hindsight: { condition: service_healthy }
       ombre: { condition: service_healthy }
-    ports:
-      - "127.0.0.1:${GATEWAY_HOST_PORT:-18080}:8080"
     environment:
       GATEWAY_DEVICES: ${GATEWAY_DEVICES:?例如 pc=随机串A,phone=随机串B}
       GATEWAY_ADMIN_TOKEN: ${GATEWAY_ADMIN_TOKEN:?}

@@ -97,6 +97,14 @@ def test_empty_messages_is_a_client_error(harness: Harness) -> None:
     assert harness.upstream.requests == []
 
 
+def test_model_list_lets_kelivo_add_the_companion_as_a_model(harness: Harness) -> None:
+    resp = harness.client.get("/v1/models", headers={"Authorization": "Bearer tok-pc"})
+
+    assert resp.status_code == 200
+    assert [m["id"] for m in resp.json()["data"]] == ["dafeiyu"]
+    assert harness.client.get("/v1/models", headers={"Authorization": "Bearer tok-stranger"}).status_code == 401
+
+
 def test_admin_endpoints_require_admin_token(harness: Harness) -> None:
     assert harness.client.get("/admin/turns").status_code == 401
     assert harness.client.get("/admin/turns", headers={"Authorization": "Bearer tok-pc"}).status_code == 401

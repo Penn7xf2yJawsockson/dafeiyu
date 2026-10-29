@@ -168,6 +168,13 @@ def create_app(
             return JSONResponse(result)
         return StreamingResponse(result, media_type="text/event-stream")
 
+    @app.get("/v1/models")
+    async def models(request: Request) -> Any:
+        """Kelivo 添加供应商时会拉模型列表;对它来说,陪伴角色就是唯一的"模型"。"""
+        if settings.devices.get(_bearer(request) or request.headers.get("x-api-key", "")) is None:
+            return _unauthorized()
+        return {"object": "list", "data": [{"id": settings.companion, "object": "model", "owned_by": "dafeiyu"}]}
+
     @app.post("/v1/messages")
     async def messages(request: Request) -> Any:
         device = settings.devices.get(request.headers.get("x-api-key", "") or _bearer(request))
