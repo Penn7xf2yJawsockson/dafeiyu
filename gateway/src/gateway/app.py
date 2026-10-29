@@ -21,7 +21,10 @@ from gateway import upstream as up
 from gateway.background import is_background, is_compress, is_client_context
 from gateway.compose import compose, local_time_line, render_recall_block, turn_start
 from gateway.config import Settings
+from gateway.curated import PERSONA, PROFILE, CuratedStore
 from gateway.lifecycle import Lifecycle, context_hash, message_text
+from gateway.lorebook import LoreSettings, activate, entries_of, render
+from gateway.panel import register_panel
 from gateway.recall import recall
 from gateway.stores import MemoryStore
 from gateway.transcript import FAILED, TranscriptLog
@@ -35,11 +38,6 @@ TurnResult = up.UpstreamError | dict[str, Any] | AsyncIterator[bytes]
 
 class Clock(Protocol):
     def now(self) -> datetime: ...
-
-
-def _read(settings: Settings, name: str) -> str:
-    path = settings.data_dir / name
-    return path.read_text(encoding="utf-8").strip() if path.exists() else ""
 
 
 def _bearer(request: Request) -> str:
@@ -68,6 +66,20 @@ def create_app(
     clock: Clock,
 ) -> FastAPI:
     log = TranscriptLog(settings.data_dir / "transcript.sqlite3")
+    curated = CuratedStore(settings.data_dir, clock)
+    lore_defaults = LoreSettings()
+
+    def lore_for(history: list[dict[str, Any]], start: int) -> list[Any]:
+        """网关世界书:扫描本轮用户这句话及之前的消息(不含工具回合与客户端注入的上下文)。
+        确定性注入,不经过召回超时,降级轮照样有(工单 09)。读不了世界书时这一轮不注入,不影响回复。"""
+        try:
+            recent = [message_text(m.get("content")) for m in history[: start + 1]
+                      if m.get("role") in ("user", "assistant")]
+            settings_ = curated.lore_settings(lore_defaults)
+            return render(activate(entries_of(curated.worlds()), recent, settings_), settings_)
+        except Exception:
+            logger.exception("网关世界书匹配失败,本轮不注入")
+            return []
     life = Lifecycle(settings, log, fact_store, affect_store, notice=DEGRADED_NOTICE)
     drain_lock = asyncio.Lock()
     direct_model = f"{settings.companion}-direct"  # 无记忆直通:给标题生成、酒馆、Agent 等用
@@ -112,6 +124,7 @@ def create_app(
         await client.aclose()
 
     app = FastAPI(title="dafeiyu-gateway", lifespan=lifespan)
+    register_panel(app, curated, settings.panel_password, lore_defaults)
 
     async def run_turn(device: str, body: dict[str, Any], incoming: dict[str, Any] | None = None) -> TurnResult:
         """一轮的完整处理。body 是 OpenAI Chat Completions 格式。
@@ -155,13 +168,14 @@ def create_app(
                                  user_text=message_text(history[start].get("content")))
             tick_soon()
             recalled = await recall(query=turn.user_text, facts=fact_store, affect=affect_store,
-                                    timeout=settings.recall_timeout_seconds, surface=first_turn, lore=[],
+                                    timeout=settings.recall_timeout_seconds, surface=first_turn,
+                                    lore=lore_for(history, start),
                                     handoff=handoff)
             block = render_recall_block(recalled, local_time_line(now, settings.timezone))
             reasons, memory_ids = recalled.degraded_reasons, recalled.memory_ids()
             log.save_recall(turn.id, block, reasons, memory_ids)
 
-        system = "\n\n".join(p for p in (_read(settings, "persona.md"), _read(settings, "core_profile.md")) if p)
+        system = "\n\n".join(p for p in (curated.text(PERSONA), curated.text(PROFILE)) if p)
         payload = {**body, "model": settings.upstream_model,
                    "messages": compose(system, client_system, full, block,
                                        next(i for i, m in enumerate(full) if m is history[start]), DEGRADED_NOTICE)}

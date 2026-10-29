@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>大肥鱼面板</title>
+<style>
+:root { --bg:#f6f6f4; --card:#fff; --fg:#222; --muted:#777; --line:#ddd; --accent:#2f6fde; --danger:#c43; }
+@media (prefers-color-scheme: dark) { :root { --bg:#17181a; --card:#222326; --fg:#e8e8e8; --muted:#999; --line:#3a3b3f; --accent:#6a9cff; --danger:#e66; } }
+* { box-sizing:border-box; }
+body { margin:0; font:14px/1.5 system-ui,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--fg); }
+header { display:flex; gap:4px; align-items:center; padding:8px 16px; background:var(--card); border-bottom:1px solid var(--line); flex-wrap:wrap; }
+header h1 { font-size:16px; margin:0 16px 0 0; }
+header .sp { flex:1; }
+main { padding:16px; max-width:1200px; margin:0 auto; }
+button { font:inherit; padding:5px 12px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--fg); cursor:pointer; }
+button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+button.danger { color:var(--danger); }
+button.tab.on { border-color:var(--accent); color:var(--accent); }
+button:disabled { opacity:.5; cursor:default; }
+input, select, textarea { font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--fg); }
+textarea { width:100%; resize:vertical; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:12px; }
+.row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0; }
+.muted { color:var(--muted); font-size:12px; }
+.cols { display:grid; grid-template-columns:240px 1fr; gap:12px; }
+@media (max-width:760px) { .cols { grid-template-columns:1fr; } }
+.list div.item { padding:6px 8px; border-radius:6px; cursor:pointer; display:flex; gap:6px; align-items:center; }
+.list div.item.on { background:color-mix(in srgb, var(--accent) 15%, transparent); }
+table { width:100%; border-collapse:collapse; }
+td, th { border-bottom:1px solid var(--line); padding:5px 6px; text-align:left; vertical-align:top; }
+th { font-weight:600; font-size:12px; color:var(--muted); }
+tr.off td { opacity:.5; }
+label.f { display:flex; flex-direction:column; gap:2px; font-size:12px; color:var(--muted); }
+label.f > * { color:var(--fg); font-size:14px; }
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:8px; }
+pre { white-space:pre-wrap; word-break:break-word; background:var(--bg); padding:8px; border-radius:6px; max-height:50vh; overflow:auto; margin:0; }
+#toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:#333; color:#fff; padding:8px 16px; border-radius:6px; display:none; }
+dialog { border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--fg); width:min(800px,92vw); }
+.hidden { display:none !important; }
+</style>
+</head>
+<body>
+<div id="login" class="hidden"><main><div class="card" style="max-width:360px;margin:15vh auto">
+  <h2 style="margin-top:0">大肥鱼面板</h2>
+  <div class="row"><input id="pw" type="password" placeholder="面板密码" style="flex:1" autofocus></div>
+  <div class="row"><button class="primary" id="loginBtn">登录</button><span id="loginErr" class="muted"></span></div>
+</div></main></div>
+<div id="app" class="hidden">
+<header>
+  <h1>大肥鱼面板</h1>
+  <button class="tab" data-tab="persona">人设</button>
+  <button class="tab" data-tab="profile">核心档案</button>
+  <button class="tab" data-tab="worlds">世界书</button>
+  <button class="tab" data-tab="settings">世界书设置</button>
+  <button class="tab" data-tab="test">试匹配</button>
+  <span class="sp"></span>
+  <button id="logoutBtn">退出</button>
+</header>
+<main>
+  <section id="tab-doc" class="hidden"><div class="card">
+    <div class="row"><b id="docTitle"></b><span class="sp" style="flex:1"></span>
+      <button data-history="doc">历史版本</button><button class="primary" id="docSave">保存</button></div>
+    <p class="muted" id="docHint"></p>
+    <textarea id="docText" rows="22"></textarea>
+  </div></section>
+
+  <section id="tab-worlds" class="hidden"><div class="cols">
+    <div class="card">
+      <div class="row"><b>世界书</b></div>
+      <div class="list" id="worldList"></div>
+      <div class="row"><button id="worldNew">新建</button><button id="worldImport">导入酒馆 JSON</button>
+        <input type="file" id="worldFile" accept=".json,application/json" class="hidden"></div>
+      <p class="muted">勾选 = 启用。导入的文件格式和酒馆(SillyTavern)世界书一样。</p>
+    </div>
+    <div>
+      <div class="card" id="worldPane">
+        <div class="row"><b id="worldTitle">选一本世界书</b><span style="flex:1"></span>
+          <button id="entryNew" disabled>新建条目</button><button id="worldExport" disabled>导出</button>
+          <button data-history="world" disabled id="worldHist">历史版本</button>
+          <button class="danger" id="worldDelete" disabled>删除这本</button></div>
+        <div class="row"><input id="entryFilter" placeholder="筛选:关键词 / 备注 / 内容" style="flex:1"></div>
+        <table><thead><tr><th>启用</th><th>备注</th><th>主关键词</th><th>常驻</th><th>顺序</th><th>概率</th><th></th></tr></thead>
+          <tbody id="entryRows"></tbody></table>
+      </div>
+      <div class="card hidden" id="entryEditor">
+        <div class="row"><b>编辑条目 <span id="entryUid" class="muted"></span></b><span style="flex:1"></span>
+          <button id="entryCancel">取消</button><button class="danger" id="entryDelete">删除条目</button>
+          <button class="primary" id="entrySave">保存条目</button></div>
+        <div class="grid">
+          <label class="f" style="grid-column:1/-1">备注 comment<input data-f="comment"></label>
+          <label class="f" style="grid-column:1/-1">主关键词 key(逗号分隔;/正则/ 也可以)<input data-f="key" data-list></label>
+          <label class="f" style="grid-column:1/-1">次关键词 keysecondary(逗号分隔)<input data-f="keysecondary" data-list></label>
+          <label class="f">次关键词逻辑 selectiveLogic<select data-f="selectiveLogic" data-num>
+            <option value="0">与任一 AND ANY</option><option value="3">与全部 AND ALL</option>
+            <option value="2">非任一 NOT ANY</option><option value="1">非全部 NOT ALL</option></select></label>
+          <label class="f">顺序 order(大的更靠后、优先占预算)<input data-f="order" data-num type="number"></label>
+          <label class="f">概率 probability(%)<input data-f="probability" data-num type="number" min="0" max="100"></label>
+          <label class="f">扫描深度 scanDepth(空 = 用全局)<input data-f="scanDepth" data-num data-null type="number" min="0"></label>
+          <label class="f">互斥组 group<input data-f="group"></label>
+          <label class="f">组权重 groupWeight<input data-f="groupWeight" data-num type="number"></label>
+          <label class="f">区分大小写 caseSensitive<select data-f="caseSensitive" data-tri>
+            <option value="">用全局</option><option value="true">是</option><option value="false">否</option></select></label>
+          <label class="f">整词匹配 matchWholeWords<select data-f="matchWholeWords" data-tri>
+            <option value="">用全局</option><option value="true">是</option><option value="false">否</option></select></label>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" data-f="constant" data-bool> 常驻 constant</label>
+          <label><input type="checkbox" data-f="disable" data-bool> 停用 disable</label>
+          <label><input type="checkbox" data-f="useProbability" data-bool> 使用概率</label>
+          <label><input type="checkbox" data-f="groupOverride" data-bool> 组内优先</label>
+          <label><input type="checkbox" data-f="ignoreBudget" data-bool> 不占预算</label>
+          <label><input type="checkbox" data-f="excludeRecursion" data-bool> 不被递归触发</label>
+          <label><input type="checkbox" data-f="preventRecursion" data-bool> 不触发递归</label>
+        </div>
+        <label class="f">内容 content(支持 {{user}} {{char}})<textarea data-f="content" rows="8"></textarea></label>
+        <p class="muted">酒馆里的「插入位置 / 深度 / 角色 / 粘性 / 冷却 / 角色过滤」等字段会原样保留,导回酒馆不丢;网关里所有条目都放进召回块的「相关条目」。</p>
+      </div>
+    </div>
+  </div></section>
+  <section id="tab-settings" class="hidden"><div class="card">
+    <div class="row"><b>世界书全局设置</b><span style="flex:1"></span>
+      <button data-history="settings">历史版本</button><button class="primary" id="setSave">保存</button></div>
+    <div class="grid">
+      <label class="f">扫描深度 scan_depth(往回看几条消息)<input id="s_scan_depth" type="number" min="0"></label>
+      <label class="f">预算 budget_chars(注入总字数上限)<input id="s_budget_chars" type="number" min="0"></label>
+      <label class="f">{{user}} 替换为<input id="s_user_name"></label>
+      <label class="f">{{char}} 替换为<input id="s_char_name"></label>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="s_recursive"> 递归扫描(条目内容可以再触发别的条目)</label>
+      <label><input type="checkbox" id="s_case_sensitive"> 默认区分大小写</label>
+      <label><input type="checkbox" id="s_match_whole_words"> 默认整词匹配</label>
+    </div>
+  </div></section>
+
+  <section id="tab-test" class="hidden"><div class="card">
+    <div class="row"><b>试匹配</b><span class="muted">每行一条消息,最后一行当作用户这一轮说的话。概率和互斥组用固定随机数,结果可复现。</span></div>
+    <textarea id="testText" rows="6" placeholder="今天阿澄来找我了"></textarea>
+    <div class="row"><button class="primary" id="testRun">看看会注入什么</button></div>
+    <div id="testOut"></div>
+  </div></section>
+</main>
+</div>
+
+<dialog id="histDlg">
+  <div class="row"><b>历史版本</b><span style="flex:1"></span><button id="histClose">关闭</button></div>
+  <table><thead><tr><th>时间</th><th>来源</th><th>大小</th><th></th></tr></thead><tbody id="histRows"></tbody></table>
+  <div id="histView" class="hidden"><div class="row"><b id="histViewTitle"></b><span style="flex:1"></span>
+    <button class="primary" id="histRollback">回滚到这一版</button></div><pre id="histContent"></pre></div>
+</dialog>
+<div id="toast"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "text") n.textContent = v; else if (k === "on") Object.entries(v).forEach(([e, f]) => n.addEventListener(e, f));
+    else if (k in n) n[k] = v; else n.setAttribute(k, v);
+  }
+  kids.flat().forEach((c) => n.append(c));
+  return n;
+};
+const toast = (msg) => { const t = $("toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", 2500); };
+
+async function api(method, path, body) {
+  const opt = { method, credentials: "same-origin", headers: {} };
+  if (method !== "GET") opt.headers["X-Panel"] = "1";
+  if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  const r = await fetch("/panel/api/" + path, opt);
+  if (r.status === 401 && path !== "login") { show(false); throw new Error("未登录"); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
+  return data;
+}
+const q = (o) => new URLSearchParams(o).toString();
+
+// ---------- 登录 ----------
+function show(loggedIn) { $("login").classList.toggle("hidden", loggedIn); $("app").classList.toggle("hidden", !loggedIn); }
+async function login() {
+  $("loginErr").textContent = "";
+  try { await api("POST", "login", { password: $("pw").value }); $("pw").value = ""; show(true); await openTab("persona"); }
+  catch (e) { $("loginErr").textContent = e.message; }
+}
+$("loginBtn").onclick = login;
+$("pw").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
+$("logoutBtn").onclick = async () => { await api("POST", "logout"); show(false); };
+
+// ---------- 标签页 ----------
+let current = { tab: "persona", kind: "persona", name: "" };
+const DOCS = {
+  persona: ["人设", "大肥鱼是谁、怎么说话。每一轮放在系统提示的最前面。"],
+  profile: ["核心档案", "关于你的关键事实(名字、住哪、重要的人和事)。每一轮都带上,不依赖检索;事实冲突时以这里为准。"],
+};
+document.querySelectorAll("button.tab").forEach((b) => b.onclick = () => openTab(b.dataset.tab));
+async function openTab(tab) {
+  current.tab = tab;
+  document.querySelectorAll("button.tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+  for (const s of ["doc", "worlds", "settings", "test"]) $("tab-" + s).classList.add("hidden");
+  if (tab in DOCS) {
+    $("tab-doc").classList.remove("hidden");
+    $("docTitle").textContent = DOCS[tab][0]; $("docHint").textContent = DOCS[tab][1];
+    $("docText").value = (await api("GET", "doc?" + q({ kind: tab }))).content;
+  } else {
+    $("tab-" + tab).classList.remove("hidden");
+    if (tab === "worlds") await loadWorlds();
+    if (tab === "settings") await loadSettings();
+  }
+}
+$("docSave").onclick = async () => {
+  try { await api("PUT", "doc?" + q({ kind: current.tab }), { content: $("docText").value }); toast("已保存,下一轮生效"); }
+  catch (e) { toast(e.message); }
+};
+// ---------- 世界书 ----------
+let state = { worlds: [], settings: {} };
+let world = null;      // { name, data }
+let editing = null;    // 正在编辑的条目 uid
+const rawSettings = async () => { try { return JSON.parse((await api("GET", "doc?kind=settings")).content || "{}"); } catch { return {}; } };
+
+async function loadWorlds(select) {
+  state = await api("GET", "state");
+  const list = $("worldList"); list.replaceChildren();
+  for (const w of state.worlds) {
+    const cb = el("input", { type: "checkbox", checked: w.enabled, title: "启用", on: { click: (e) => e.stopPropagation(), change: () => toggleWorld(w.name, cb.checked) } });
+    list.append(el("div", { className: "item" + (world && world.name === w.name ? " on" : ""), on: { click: () => openWorld(w.name) } },
+      cb, el("span", { text: w.name, style: "flex:1" }), el("span", { className: "muted", text: w.broken ? "JSON 损坏" : String(w.entries) })));
+  }
+  if (!state.worlds.length) list.append(el("p", { className: "muted", text: "还没有世界书" }));
+  if (select) await openWorld(select);
+}
+async function toggleWorld(name, enabled) {
+  const s = await rawSettings();
+  const off = new Set(s.disabled_worlds || []); enabled ? off.delete(name) : off.add(name);
+  s.disabled_worlds = [...off].sort();
+  await api("PUT", "doc?kind=settings", { content: JSON.stringify(s, null, 2) });
+  toast(enabled ? "已启用 " + name : "已停用 " + name);
+}
+async function openWorld(name) {
+  const content = (await api("GET", "doc?" + q({ kind: "world", name }))).content;
+  let data; try { data = JSON.parse(content || "{}"); } catch { toast("这本世界书的 JSON 坏了,可以在历史版本里回滚"); data = { entries: {} }; }
+  world = { name, data };
+  $("worldTitle").textContent = name;
+  for (const id of ["entryNew", "worldExport", "worldHist", "worldDelete"]) $(id).disabled = false;
+  closeEditor(); renderEntries();
+  document.querySelectorAll("#worldList .item").forEach((n) => n.classList.toggle("on", n.children[1].textContent === name));
+}
+const entriesOf = () => Object.values((world && world.data.entries) || {});
+const keysText = (v) => Array.isArray(v) ? v.join(", ") : (v || "");
+function renderEntries() {
+  const f = $("entryFilter").value.trim().toLowerCase();
+  const rows = $("entryRows"); rows.replaceChildren();
+  const sorted = entriesOf().sort((a, b) => (a.order ?? 100) - (b.order ?? 100) || Number(a.uid) - Number(b.uid));
+  for (const e of sorted) {
+    const hay = [e.comment, keysText(e.key), keysText(e.keysecondary), e.content].join(" ").toLowerCase();
+    if (f && !hay.includes(f)) continue;
+    const on = el("input", { type: "checkbox", checked: !e.disable, on: { change: () => { e.disable = !on.checked; saveWorld(); renderEntries(); } } });
+    rows.append(el("tr", { className: e.disable ? "off" : "" },
+      el("td", {}, on), el("td", { text: e.comment || "" }), el("td", { text: keysText(e.key) }),
+      el("td", { text: e.constant ? "常驻" : "" }), el("td", { text: String(e.order ?? 100) }),
+      el("td", { text: (e.useProbability === false ? 100 : (e.probability ?? 100)) + "%" }),
+      el("td", {}, el("button", { text: "编辑", on: { click: () => openEditor(String(e.uid)) } }))));
+  }
+}
+$("entryFilter").oninput = renderEntries;
+
+function openEditor(uid) {
+  editing = uid;
+  const e = world.data.entries[uid];
+  $("entryUid").textContent = "uid " + uid;
+  document.querySelectorAll("#entryEditor [data-f]").forEach((n) => {
+    const v = e[n.dataset.f];
+    if ("bool" in n.dataset) n.checked = !!v;
+    else if ("list" in n.dataset) n.value = keysText(v);
+    else if ("tri" in n.dataset) n.value = v === true ? "true" : v === false ? "false" : "";
+    else n.value = v ?? "";
+  });
+  $("entryEditor").classList.remove("hidden");
+  $("entryEditor").scrollIntoView({ behavior: "smooth" });
+}
+function closeEditor() { editing = null; $("entryEditor").classList.add("hidden"); }
+$("entryCancel").onclick = closeEditor;
+$("entrySave").onclick = async () => {
+  const e = world.data.entries[editing];
+  document.querySelectorAll("#entryEditor [data-f]").forEach((n) => {
+    const k = n.dataset.f;
+    if ("bool" in n.dataset) e[k] = n.checked;
+    else if ("list" in n.dataset) e[k] = n.value.split(",").map((s) => s.trim()).filter(Boolean);
+    else if ("tri" in n.dataset) e[k] = n.value === "" ? null : n.value === "true";
+    else if ("num" in n.dataset) e[k] = n.value === "" ? ("null" in n.dataset ? null : 0) : Number(n.value);
+    else e[k] = n.value;
+  });
+  if (await saveWorld()) { closeEditor(); renderEntries(); }
+};
+$("entryDelete").onclick = async () => {
+  if (!confirm("删除这个条目?(可以在历史版本里找回)")) return;
+  delete world.data.entries[editing];
+  if (await saveWorld()) { closeEditor(); renderEntries(); }
+};
+$("entryNew").onclick = () => {
+  const uids = entriesOf().map((e) => Number(e.uid)).filter((n) => !isNaN(n));
+  const uid = String(uids.length ? Math.max(...uids) + 1 : 0);
+  world.data.entries ||= {};
+  world.data.entries[uid] = { uid: Number(uid), key: [], keysecondary: [], comment: "", content: "", order: 100, probability: 100, useProbability: true, selective: true, selectiveLogic: 0 };
+  renderEntries(); openEditor(uid);
+};
+async function saveWorld() {
+  try {
+    await api("PUT", "doc?" + q({ kind: "world", name: world.name }), { content: JSON.stringify(world.data) });
+    const fresh = JSON.parse((await api("GET", "doc?" + q({ kind: "world", name: world.name }))).content);
+    world.data = fresh; toast("已保存,下一轮生效"); loadWorlds(); return true;
+  } catch (e) { toast(e.message); return false; }
+}
+$("worldNew").onclick = async () => {
+  const name = (prompt("世界书名字") || "").trim();
+  if (!name) return;
+  if (state.worlds.some((w) => w.name === name)) return toast("已经有这本了");
+  try { await api("PUT", "doc?" + q({ kind: "world", name }), { content: JSON.stringify({ entries: {} }) }); await loadWorlds(name); }
+  catch (e) { toast(e.message); }
+};
+$("worldImport").onclick = () => $("worldFile").click();
+$("worldFile").onchange = async (ev) => {
+  const file = ev.target.files[0]; ev.target.value = "";
+  if (!file) return;
+  const name = (prompt("导入为(世界书名字)", file.name.replace(/\.json$/i, "")) || "").trim();
+  if (!name) return;
+  if (state.worlds.some((w) => w.name === name) && !confirm("「" + name + "」已存在,覆盖它?(旧内容留在历史版本里)")) return;
+  try { await api("PUT", "doc?" + q({ kind: "world", name }), { content: await file.text() }); toast("已导入"); await loadWorlds(name); }
+  catch (e) { toast("导入失败:" + e.message); }
+};
+$("worldExport").onclick = () => {
+  const blob = new Blob([JSON.stringify(world.data, null, 2)], { type: "application/json" });
+  const a = el("a", { href: URL.createObjectURL(blob), download: world.name + ".json" });
+  document.body.append(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+};
+$("worldDelete").onclick = async () => {
+  if (!confirm("删除世界书「" + world.name + "」?(可以在历史版本里回滚找回)")) return;
+  await api("DELETE", "doc?" + q({ kind: "world", name: world.name }));
+  world = null; $("worldTitle").textContent = "选一本世界书"; $("entryRows").replaceChildren(); closeEditor();
+  for (const id of ["entryNew", "worldExport", "worldHist", "worldDelete"]) $(id).disabled = true;
+  await loadWorlds();
+};
+
+// ---------- 设置 ----------
+const SETTING_KEYS = ["scan_depth", "budget_chars", "user_name", "char_name", "recursive", "case_sensitive", "match_whole_words"];
+async function loadSettings() {
+  const s = (await api("GET", "state")).settings;
+  for (const k of SETTING_KEYS) { const n = $("s_" + k); if (n.type === "checkbox") n.checked = !!s[k]; else n.value = s[k] ?? ""; }
+}
+$("setSave").onclick = async () => {
+  const s = await rawSettings();
+  for (const k of SETTING_KEYS) { const n = $("s_" + k); s[k] = n.type === "checkbox" ? n.checked : n.type === "number" ? Number(n.value) : n.value; }
+  try { await api("PUT", "doc?kind=settings", { content: JSON.stringify(s, null, 2) }); toast("已保存,下一轮生效"); } catch (e) { toast(e.message); }
+};
+
+// ---------- 试匹配 ----------
+$("testRun").onclick = async () => {
+  const messages = $("testText").value.split("\n").filter((s) => s.trim());
+  const out = $("testOut"); out.replaceChildren();
+  const r = await api("POST", "lore-test", { messages });
+  if (!r.entries.length) { out.append(el("p", { className: "muted", text: "没有条目会被注入" })); return; }
+  out.append(el("p", { className: "muted", text: "会按这个顺序放进召回块的「相关条目」:" }));
+  for (const e of r.entries) out.append(el("div", { className: "card" },
+    el("div", { className: "row" }, el("b", { text: e.comment || e.id }), el("span", { className: "muted", text: e.id + (e.constant ? " · 常驻" : "") })),
+    el("pre", { text: e.text })));
+};
+
+// ---------- 历史版本 ----------
+let hist = null;
+document.querySelectorAll("[data-history]").forEach((b) => b.onclick = () => {
+  const t = b.dataset.history;
+  if (t === "doc") openHistory({ kind: current.tab }, DOCS[current.tab][0]);
+  else if (t === "settings") openHistory({ kind: "settings" }, "世界书设置");
+  else openHistory({ kind: "world", name: world.name }, "世界书「" + world.name + "」");
+});
+const SOURCES = { initial: "第一次看到", panel: "面板", external: "直接改文件" };
+async function openHistory(target, title) {
+  hist = { target, title, picked: null };
+  $("histView").classList.add("hidden");
+  const rows = $("histRows"); rows.replaceChildren();
+  for (const v of (await api("GET", "history?" + q(target))).versions) {
+    const src = SOURCES[v.source] || (v.source.startsWith("rollback:") ? "回滚" : v.source);
+    rows.append(el("tr", {}, el("td", { text: new Date(v.at).toLocaleString() }), el("td", { text: src }),
+      el("td", { text: v.deleted ? "已删除" : (v.size ?? 0) + " 字" }),
+      el("td", {}, el("button", { text: "查看", on: { click: () => viewVersion(v) } }))));
+  }
+  $("histDlg").showModal();
+}
+async function viewVersion(v) {
+  const row = await api("GET", "version?id=" + v.id);
+  hist.picked = v.id;
+  $("histViewTitle").textContent = hist.title + " · " + new Date(v.at).toLocaleString();
+  $("histContent").textContent = row.content ?? "(这一版是删除)";
+  $("histView").classList.remove("hidden");
+}
+$("histRollback").onclick = async () => {
+  if (!confirm("回滚到这一版?(当前内容也会留在历史里)")) return;
+  await api("POST", "rollback?" + q({ ...hist.target, id: hist.picked }));
+  $("histDlg").close(); toast("已回滚,下一轮生效");
+  if (hist.target.kind === "world") await loadWorlds(hist.target.name); else await openTab(current.tab);
+};
+$("histClose").onclick = () => $("histDlg").close();
+
+// ---------- 启动 ----------
+api("GET", "state").then(() => { show(true); openTab("persona"); }).catch(() => show(false));
+</script>
+</body>
+</html>

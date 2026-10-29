@@ -43,7 +43,7 @@ class Recall:
 # 跨设备衔接保持对话的时间顺序;其余按记忆 ID 排序,保证同样的召回结果每次渲染一致。
 _SECTIONS = (
     ("handoff", "刚才在另一台设备上的对话", True),
-    ("lore", "相关条目", False),
+    ("lore", "相关条目", True),   # 世界书已按 order 排好(order 大的更靠近用户这句话)
     ("facts", "相关事实", False),
     ("surfaced", "心里还挂着的事", False),
     ("affect", "相关经历与感受", False),
