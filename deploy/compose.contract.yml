@@ -1,0 +1,30 @@
+# 契约测试:对真实服务跑 gateway/tests/contract。
+# 用法(在仓库根目录):docker compose -f compose.yml -f deploy/compose.contract.yml --profile contract run --rm contract
+# 注意:本文件里的相对路径以仓库根目录为基准(compose 的项目目录)
+# - Hindsight 用独立的 contract-test bank,不碰真实记忆
+# - Ombre 起一个临时实例,数据放在 data/ombre-contract,测完删除
+
+services:
+  ombre-contract:
+    extends: { file: compose.yml, service: ombre }
+    profiles: ["contract"]
+    volumes: !override
+      - ./data/ombre-contract:/app/buckets
+
+  contract:
+    image: python:3.12-slim
+    profiles: ["contract"]
+    depends_on: [hindsight, ombre-contract]
+    working_dir: /src/gateway
+    volumes:
+      - ./gateway:/src/gateway
+    environment:
+      PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+      HINDSIGHT_URL: http://hindsight:8888
+      HINDSIGHT_BANK: contract-test
+      HINDSIGHT_API_KEY: ${HINDSIGHT_API_KEY:?}
+      OMBRE_MCP_URL: http://ombre-contract:8000/mcp
+      OMBRE_MCP_TOKEN: ${OMBRE_MCP_TOKEN:?}
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:?}
+    command: >
+      sh -c "pip install -q '.[dev]' && pytest tests/contract -v -p no:cacheprovider"

@@ -1,0 +1,25 @@
+# 端到端自测:另起一个网关(独立数据目录、独立 Hindsight bank、临时 Ombre),走真实中转跑一遍完整链路。
+# 用法(在仓库根目录):
+#   docker compose -f compose.yml -f deploy/compose.e2e.yml --profile e2e up -d --build gateway-e2e
+#   .venv/bin/python deploy/e2e_smoke.py
+#   docker compose -f compose.yml -f deploy/compose.e2e.yml --profile e2e rm -sf gateway-e2e ombre-e2e
+# 相对路径以仓库根目录为基准。不碰真实记忆。
+
+services:
+  ombre-e2e:
+    extends: { file: compose.yml, service: ombre }
+    profiles: ["e2e"]
+    volumes: !override
+      - ./data/ombre-e2e:/app/buckets
+
+  gateway-e2e:
+    extends: { file: compose.yml, service: gateway }
+    profiles: ["e2e"]
+    depends_on: !override [hindsight, ombre-e2e]
+    ports: !override
+      - "127.0.0.1:18081:8080"
+    environment:
+      HINDSIGHT_BANK: e2e-test
+      OMBRE_MCP_URL: http://ombre-e2e:8000/mcp
+    volumes: !override
+      - ./data/gateway-e2e:/data
