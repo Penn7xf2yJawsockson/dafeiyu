@@ -6,7 +6,9 @@ services:
   # 手机入口(ADR-0006):私网里只把 8080 端口转发给网关(tailscale serve),手机访问 http://dafeiyu:8080。
   # 不发布子网路由,两个记忆库从私网不可达。网关不依赖这个容器:它重启或还没登录,电脑上照常能用。
   # 首次登录:docker compose logs tailscale 里打开最新的登录链接;或在 .env 里填 TS_AUTHKEY。
+  # 默认不启动(profile: phone)。要手机入口时在 .env 里写 COMPOSE_PROFILES=phone,再 docker compose up -d。
   tailscale:
+    profiles: [phone]
     image: tailscale/tailscale:${TAILSCALE_VERSION:-v1.104.4}
     hostname: dafeiyu
     restart: unless-stopped
