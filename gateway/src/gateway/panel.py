@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from gateway.curated import LORE_SETTINGS, PERSONA, PROFILE, CuratedError, CuratedStore, world_path
 from gateway.compose import compose, system_head
-from gateway.lorebook import LoreSettings, activate, entries_of, place, render
+from gateway.lorebook import ENTRY_DEFAULTS, LoreSettings, activate, entries_of, place, render
 
 COOKIE = "dafeiyu_panel"
 SESSION_SECONDS = 7 * 24 * 3600
@@ -104,7 +104,8 @@ def register_panel(app: FastAPI, store: CuratedStore, password: str, lore_defaul
                 count, broken = 0, True
             worlds.append({"name": name, "enabled": name not in disabled, "entries": count, "broken": broken})
         settings = store.lore_settings(lore_defaults)
-        return JSONResponse({"worlds": worlds, "settings": {**settings.__dict__, "disabled_worlds": sorted(disabled)}})
+        return JSONResponse({"worlds": worlds, "settings": {**settings.__dict__, "disabled_worlds": sorted(disabled)},
+                             "entry_defaults": ENTRY_DEFAULTS})
 
     def _path(kind: str, name: str = "") -> str:
         return {"persona": PERSONA, "profile": PROFILE, "settings": LORE_SETTINGS}.get(kind) or world_path(name)

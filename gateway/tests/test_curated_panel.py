@@ -304,3 +304,11 @@ def test_preview_shows_where_persona_profile_and_entries_land(panel: Any) -> Non
         ("user", 0, "本轮用户这句话")]
     assert r["layout"][0]["content"] == "你是大肥鱼。\n\n上\n\n用户叫小鱼"
     assert [e["where"] for e in r["entries"]] == ["↑角色定义", "@D2 用户"]
+
+
+def test_state_exposes_sillytavern_entry_defaults_for_new_entries(panel: Any) -> None:
+    """面板新建条目用酒馆的默认值(组权重 100、顺序 100、概率 100、插入深度 4),不是 0。"""
+    client, _, _ = panel
+    _login(client)
+    d = client.get("/panel/api/state").json()["entry_defaults"]
+    assert (d["groupWeight"], d["order"], d["probability"], d["depth"], d["scanDepth"]) == (100, 100, 100, 4, None)

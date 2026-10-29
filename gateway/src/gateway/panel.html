@@ -52,7 +52,7 @@ dialog { border:1px solid var(--line); border-radius:8px; background:var(--card)
   <button class="tab" data-tab="persona">人设</button>
   <button class="tab" data-tab="profile">核心档案</button>
   <button class="tab" data-tab="worlds">世界书</button>
-  <button class="tab" data-tab="settings">世界书设置</button>
+  <button class="tab" data-tab="settings">全局激活设置</button>
   <button class="tab" data-tab="test">注入预览</button>
   <span class="sp"></span>
   <button id="logoutBtn">退出</button>
@@ -130,18 +130,22 @@ dialog { border:1px solid var(--line); border-radius:8px; background:var(--card)
     </div>
   </div></section>
   <section id="tab-settings" class="hidden"><div class="card">
-    <div class="row"><b>世界书全局设置</b><span style="flex:1"></span>
+    <div class="row"><b>全局世界书激活设置</b><span style="flex:1"></span>
       <button data-history="settings">历史版本</button><button class="primary" id="setSave">保存</button></div>
+    <p class="muted">对应酒馆世界书面板顶部的「全局世界书激活设置」,对所有书生效。每个条目可以单独设扫描深度、区分大小写、整词,留空就用这里的值;插入位置和插入深度只在条目里设。</p>
     <div class="grid">
-      <label class="f">扫描深度 scan_depth(往回看几条消息)<input id="s_scan_depth" type="number" min="0"></label>
-      <label class="f">预算 budget_chars(注入总字数上限)<input id="s_budget_chars" type="number" min="0"></label>
-      <label class="f">{{user}} 替换为<input id="s_user_name"></label>
-      <label class="f">{{char}} 替换为<input id="s_char_name"></label>
+      <label class="f">扫描深度(往回看几条消息找关键词)<input id="s_scan_depth" type="number" min="0"></label>
+      <label class="f">预算(注入正文总字数上限;酒馆按上下文 %)<input id="s_budget_chars" type="number" min="0"></label>
     </div>
     <div class="row">
       <label><input type="checkbox" id="s_recursive"> 递归扫描(条目内容可以再触发别的条目)</label>
       <label><input type="checkbox" id="s_case_sensitive"> 默认区分大小写</label>
       <label><input type="checkbox" id="s_match_whole_words"> 默认整词匹配</label>
+    </div>
+    <div class="row" style="margin-top:12px"><b>宏替换</b><span class="muted">酒馆里 {{user}} {{char}} 取自你的人设名和角色卡名;网关没有角色卡,在这里填</span></div>
+    <div class="grid">
+      <label class="f">{{user}} 替换为<input id="s_user_name"></label>
+      <label class="f">{{char}} 替换为<input id="s_char_name"></label>
     </div>
   </div></section>
 
@@ -227,6 +231,7 @@ $("docSave").onclick = async () => {
 let state = { worlds: [], settings: {} };
 let world = null;      // { name, data }
 let editing = null;    // 正在编辑的条目 uid
+let draft = null;      // 新建、还没保存的条目(取消就丢掉,不进世界书)
 const rawSettings = async () => { try { return JSON.parse((await api("GET", "doc?kind=settings")).content || "{}"); } catch { return {}; } };
 
 async function loadWorlds(select) {
@@ -283,9 +288,9 @@ function renderEntries() {
 }
 $("entryFilter").oninput = renderEntries;
 
-function openEditor(uid) {
+function openEditor(uid, e = world.data.entries[uid]) {
   editing = uid;
-  const e = world.data.entries[uid];
+  draft = e === world.data.entries[uid] ? null : e;   // 打开已有条目时丢掉没保存的新条目
   $("entryUid").textContent = "uid " + uid;
   document.querySelectorAll("#entryEditor [data-f]").forEach((n) => {
     const v = e[n.dataset.f];
@@ -298,22 +303,31 @@ function openEditor(uid) {
   $("entryEditor").classList.remove("hidden");
   $("entryEditor").scrollIntoView({ behavior: "smooth" });
 }
-function closeEditor() { editing = null; $("entryEditor").classList.add("hidden"); }
+function closeEditor() { editing = null; draft = null; $("entryEditor").classList.add("hidden"); }
 $("entryCancel").onclick = closeEditor;
 $("posSel").onchange = syncPositionFields;
 $("entrySave").onclick = async () => {
-  const e = world.data.entries[editing];
+  const isNew = !!draft;
+  const e = draft || world.data.entries[editing];
   document.querySelectorAll("#entryEditor [data-f]").forEach((n) => {
     const k = n.dataset.f;
     if ("bool" in n.dataset) e[k] = n.checked;
     else if ("list" in n.dataset) e[k] = n.value.split(",").map((s) => s.trim()).filter(Boolean);
     else if ("tri" in n.dataset) e[k] = n.value === "" ? null : n.value === "true";
-    else if ("num" in n.dataset) e[k] = n.value === "" ? ("null" in n.dataset ? null : 0) : Number(n.value);
+    else if ("num" in n.dataset) {
+      // 留空:能为空的(扫描深度)存 null = 用全局;其余用酒馆的默认值,不当成 0
+      if (n.value !== "") e[k] = Number(n.value);
+      else e[k] = "null" in n.dataset ? null : (state.entry_defaults || {})[k] ?? null;
+    }
     else e[k] = n.value;
   });
+  world.data.entries ||= {};
+  if (isNew) world.data.entries[editing] = e;
   if (await saveWorld()) { closeEditor(); renderEntries(); }
+  else if (isNew) delete world.data.entries[editing];
 };
 $("entryDelete").onclick = async () => {
+  if (draft) { closeEditor(); return; }   // 还没保存的新条目,直接丢掉
   if (!confirm("删除这个条目?(可以在历史版本里找回)")) return;
   delete world.data.entries[editing];
   if (await saveWorld()) { closeEditor(); renderEntries(); }
@@ -321,9 +335,8 @@ $("entryDelete").onclick = async () => {
 $("entryNew").onclick = () => {
   const uids = entriesOf().map((e) => Number(e.uid)).filter((n) => !isNaN(n));
   const uid = String(uids.length ? Math.max(...uids) + 1 : 0);
-  world.data.entries ||= {};
-  world.data.entries[uid] = { uid: Number(uid), key: [], keysecondary: [], comment: "", content: "", order: 100, probability: 100, useProbability: true, selective: true, selectiveLogic: 0, position: 0, depth: 4, role: 0 };
-  renderEntries(); openEditor(uid);
+  draft = { ...structuredClone(state.entry_defaults || {}), uid: Number(uid) };
+  openEditor(uid, draft);
 };
 async function saveWorld() {
   try {
