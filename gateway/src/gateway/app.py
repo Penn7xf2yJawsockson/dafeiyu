@@ -41,6 +41,26 @@ class Clock(Protocol):
     def now(self) -> datetime: ...
 
 
+SEND_MESSAGE_TOOL = "send_message"  # dsh-segmented-reply 插件注册的工具名
+
+
+def sent_messages(turn_messages: list[dict[str, Any]]) -> list[str]:
+    """本轮 send_message 调用发出的消息,按调用顺序。参数写坏的那次跳过。"""
+    out: list[str] = []
+    for m in turn_messages:
+        for call in m.get("tool_calls") or [] if m.get("role") == "assistant" else []:
+            fn = call.get("function") or {}
+            if fn.get("name") != SEND_MESSAGE_TOOL:
+                continue
+            try:
+                content = json.loads(fn.get("arguments") or "{}").get("content")
+            except (ValueError, AttributeError):
+                continue
+            if isinstance(content, str) and content.strip():
+                out.append(content.strip())
+    return out
+
+
 def _bearer(request: Request) -> str:
     return request.headers.get("authorization", "").removeprefix("Bearer ").strip()
 
@@ -191,7 +211,8 @@ def create_app(
 
         async def finish(text: str, ok: bool, tools: list[str]) -> None:
             if ok and not tools:
-                log.complete_turn(turn.id, text)  # 最终回复
+                # DSH 分段回复插件:她说的话在本轮 send_message 的参数里,按顺序拼在最终回复前面
+                log.complete_turn(turn.id, "\n".join(p for p in (*sent_messages(history[start:]), text) if p))
             elif not ok and not tool_round:
                 log.complete_turn(turn.id, "")
                 log.set_status(turn.id, FAILED)
