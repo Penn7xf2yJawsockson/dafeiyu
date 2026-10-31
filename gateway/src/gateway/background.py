@@ -62,6 +62,13 @@ def is_compress(body: dict[str, Any]) -> bool:
     return any(text.startswith(COMPRESS_PROMPTS) for text in _candidates(body))
 
 
+# DSH 心情插件 dsh-feiyu-mood 的「判断心情」请求:最后一条用户消息以这句收尾(lib/index.js 的 judge())
+_MOOD_JUDGE = re.compile(r"心情变化[^\n]{0,10}只输出 JSON。\s*$")
+
+
 def is_background(body: dict[str, Any]) -> bool:
-    """系统消息或最后一条用户消息以 Kelivo / DSH 后台任务的默认提示词开头。"""
-    return any(text.startswith(BACKGROUND_PROMPTS) for text in _candidates(body))
+    """系统消息或最后一条用户消息以 Kelivo / DSH 后台任务的默认提示词开头;或是心情插件的判断请求。"""
+    texts = _candidates(body)
+    if texts and _MOOD_JUDGE.search(texts[-1].rstrip()):
+        return True
+    return any(text.startswith(BACKGROUND_PROMPTS) for text in texts)

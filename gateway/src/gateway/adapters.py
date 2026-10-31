@@ -48,6 +48,32 @@ class HindsightStore:
     async def surface(self) -> list[MemoryHit]:
         return []  # 事实库没有"主动浮现";关键事实走核心档案
 
+    async def list_memories(self, *, q: str = "", fact_type: str = "", state: str = "valid",
+                            limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        """面板用:分页列出记忆。state 为 valid / invalidated;fact_type 为 world / experience / observation。"""
+        params: dict[str, Any] = {"limit": limit, "offset": offset, "state": state}
+        if q:
+            params["q"] = q
+        if fact_type:
+            params["type"] = fact_type
+        resp = await self._http.get(f"{self._path}/list", params=params)
+        if _bank_not_found(resp):
+            return {"items": [], "total": 0}
+        resp.raise_for_status()
+        data: dict[str, Any] = resp.json()
+        return data
+
+    async def set_memory_state(self, memory_id: str, state: str, reason: str = "") -> None:
+        """失效(invalidated)或恢复(valid)一条原始事实。observation 不能直接改,Hindsight 会拒绝(400)。"""
+        body: dict[str, Any] = {"state": state}
+        if reason and state == "invalidated":
+            body["reason"] = reason
+        resp = await self._http.patch(f"{self._path}/{memory_id}", json=body)
+        if resp.status_code >= 400:
+            detail = resp.json().get("detail", resp.text) if resp.headers.get("content-type", "").startswith(
+                "application/json") else resp.text
+            raise ValueError(str(detail)[:300])
+
     async def write_episode(self, episode_id: str, transcript: str) -> None:
         # 同一 document_id 再次 retain 会删除旧版本并整体重新处理(Hindsight retain 文档),
         # 所以每次都发整段已确定的原文,写入天然幂等。同步写入,返回即表示已入库。

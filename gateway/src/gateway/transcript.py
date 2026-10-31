@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -45,7 +47,9 @@ CREATE TABLE IF NOT EXISTS outbox (
     episode_id TEXT NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
-    done INTEGER NOT NULL DEFAULT 0
+    done INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    written_turns INTEGER
 );
 CREATE TABLE IF NOT EXISTS audit (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,6 +93,7 @@ class TranscriptLog:
     def _migrate(self) -> None:
         """旧数据库补列。只加列,不改不删,已有数据原样保留。"""
         added = {
+            "outbox": [("next_attempt_at", "TEXT"), ("written_turns", "INTEGER")],
             "audit": [("degraded_reasons", "TEXT NOT NULL DEFAULT '{}'"), ("tool_calls", "TEXT NOT NULL DEFAULT '[]'")],
             "turns": [("recall_block", "TEXT NOT NULL DEFAULT ''"), ("recall_reasons", "TEXT NOT NULL DEFAULT '{}'"),
                       ("recall_ids", "TEXT NOT NULL DEFAULT '[]'")],
@@ -98,6 +103,12 @@ class TranscriptLog:
             for name, decl in wanted:
                 if name not in columns:
                     self._db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                    if (table, name) == ("outbox", "written_turns"):
+                        # 旧库里已完成的事实写入当作写到了当时的全部确定轮,免得升级后把每一段都重新抽取一遍
+                        self._db.execute(
+                            "UPDATE outbox SET written_turns = (SELECT COUNT(*) FROM turns"
+                            " WHERE turns.episode_id = outbox.episode_id AND turns.status = 'settled')"
+                            " WHERE done = 1 AND kind = 'facts'")
 
     def open_turn(self, *, device: str, companion: str, episode_id: str, created_at: datetime,
                   context_hash: str, user_text: str) -> Turn:
@@ -125,6 +136,31 @@ class TranscriptLog:
             row = self._db.execute("SELECT recall_block, recall_reasons, recall_ids FROM turns WHERE id = ?",
                                    (turn_id,)).fetchone()
         return row["recall_block"], json.loads(row["recall_reasons"]), json.loads(row["recall_ids"])
+
+    def settle_turn(self, turn_id: str, episode_id: str, kind: str) -> None:
+        """轮确定与写入任务入队放在同一个事务里:不会出现「确定了却永远不写」。"""
+        with self._lock, self._tx():
+            self._db.execute("UPDATE turns SET status = ? WHERE id = ?", (SETTLED, turn_id))
+            self._enqueue(kind, episode_id)
+
+    def close_episode_and_enqueue(self, episode_id: str, closed_at: datetime, kind: str) -> bool:
+        """段关闭与情感库写入任务入队放在同一个事务里。返回 True 表示这次调用真正关闭了它。"""
+        with self._lock, self._tx():
+            cur = self._db.execute("UPDATE episodes SET closed_at = ? WHERE id = ? AND closed_at IS NULL",
+                                   (closed_at.isoformat(), episode_id))
+            if cur.rowcount == 1:
+                self._enqueue(kind, episode_id)
+        return cur.rowcount == 1
+
+    @contextlib.contextmanager
+    def _tx(self) -> Iterator[None]:
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
+        self._db.execute("COMMIT")
 
     def set_status(self, turn_id: str, status: str) -> None:
         with self._lock:
@@ -166,23 +202,55 @@ class TranscriptLog:
 
     def enqueue(self, kind: str, episode_id: str) -> None:
         with self._lock:
-            pending = self._db.execute("SELECT 1 FROM outbox WHERE kind = ? AND episode_id = ? AND done = 0",
-                                       (kind, episode_id)).fetchone()
-            if pending is None:
-                self._db.execute("INSERT INTO outbox (kind, episode_id) VALUES (?, ?)", (kind, episode_id))
+            self._enqueue(kind, episode_id)
 
-    def pending_jobs(self) -> list[tuple[int, str, str]]:
+    def _enqueue(self, kind: str, episode_id: str) -> None:
+        pending = self._db.execute("SELECT 1 FROM outbox WHERE kind = ? AND episode_id = ? AND done = 0",
+                                   (kind, episode_id)).fetchone()
+        if pending is None:
+            self._db.execute("INSERT INTO outbox (kind, episode_id) VALUES (?, ?)", (kind, episode_id))
+
+    def pending_jobs(self, now: datetime) -> list[tuple[int, str, str, int]]:
+        """(seq, kind, episode_id, attempts),只含已到重试时间的任务。"""
         with self._lock:
-            rows = self._db.execute("SELECT seq, kind, episode_id FROM outbox WHERE done = 0 ORDER BY seq").fetchall()
-        return [(r["seq"], r["kind"], r["episode_id"]) for r in rows]
+            rows = self._db.execute(
+                "SELECT seq, kind, episode_id, attempts FROM outbox WHERE done = 0"
+                " AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY seq", (now.isoformat(),)).fetchall()
+        return [(r["seq"], r["kind"], r["episode_id"], r["attempts"]) for r in rows]
 
-    def finish_job(self, seq: int, error: str | None) -> None:
+    def finish_job(self, seq: int, error: str | None, *, written_turns: int = 0,
+                   retry_at: datetime | None = None) -> None:
         with self._lock:
             if error is None:
-                self._db.execute("UPDATE outbox SET done = 1, attempts = attempts + 1 WHERE seq = ?", (seq,))
+                self._db.execute("UPDATE outbox SET done = 1, attempts = attempts + 1, written_turns = ?,"
+                                 " next_attempt_at = NULL WHERE seq = ?", (written_turns, seq))
             else:
-                self._db.execute("UPDATE outbox SET attempts = attempts + 1, last_error = ? WHERE seq = ?",
-                                 (error, seq))
+                self._db.execute("UPDATE outbox SET attempts = attempts + 1, last_error = ?, next_attempt_at = ?"
+                                 " WHERE seq = ?", (error, retry_at.isoformat() if retry_at else None, seq))
+
+    def unwritten_episodes(self, facts: str, affect: str) -> list[tuple[str, str]]:
+        """对账:(kind, episode_id)。
+
+        - 事实库:段里的确定轮比最近一次成功写入时多,且没有排队中的任务(事实库重写整段是幂等的)。
+        - 情感库:段已关闭、有确定轮,但从没有过情感库写入任务(Ombre 不幂等,只补从没写过的)。
+        """
+        with self._lock:
+            rows = self._db.execute(
+                """
+                SELECT ? AS kind, t.episode_id FROM turns t
+                WHERE t.status = 'settled'
+                GROUP BY t.episode_id
+                HAVING COUNT(*) > COALESCE((SELECT MAX(o.written_turns) FROM outbox o
+                                            WHERE o.kind = ? AND o.episode_id = t.episode_id AND o.done = 1), 0)
+                   AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.kind = ? AND o.episode_id = t.episode_id
+                                   AND o.done = 0)
+                UNION ALL
+                SELECT ?, e.id FROM episodes e
+                WHERE e.closed_at IS NOT NULL
+                  AND EXISTS (SELECT 1 FROM turns t WHERE t.episode_id = e.id AND t.status = 'settled')
+                  AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.kind = ? AND o.episode_id = e.id)
+                """, (facts, facts, facts, affect, affect)).fetchall()
+        return [(r[0], r[1]) for r in rows]
 
     # --- 审计 ---
 

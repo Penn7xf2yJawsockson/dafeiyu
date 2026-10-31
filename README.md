@@ -1,6 +1,6 @@
 # 大肥鱼 (dafeiyu)
 
-大肥鱼是一个情感陪伴 AI。对话客户端用 Kelivo(Windows 和 Android 两端),电脑上也可以用 DSH(DeepSeek Harness 桌面版,见 [docs/setup-dsh.md](docs/setup-dsh.md)),长期记忆由两个库承担:Hindsight 记事实,Ombre-Brain 记情感。项目的核心是一个**记忆网关**,它保证每一轮对话都一定会召回记忆、一定会写入记忆。术语见 [CONTEXT.md](CONTEXT.md),每个决定的理由见 [docs/adr/](docs/adr/)。
+大肥鱼是一个情感陪伴 AI。对话客户端用 Kelivo(Windows 和 Android 两端),电脑上也可以用 DSH(DeepSeek Harness 桌面版,见 [docs/setup-dsh.md](docs/setup-dsh.md)),长期记忆由两个库承担:Hindsight 记事实,Ombre-Brain 记情感。项目的核心是一个**记忆网关**,它保证每一轮对话都一定会召回记忆、一定会写入记忆。术语见 [CONTEXT.md](CONTEXT.md),每个决定的理由见 [docs/adr/](docs/adr/)。人设、核心档案、网关世界书在 [面板](docs/panel.md) 里改。
 
 ## 一轮对话的流程
 

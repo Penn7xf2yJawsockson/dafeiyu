@@ -97,7 +97,7 @@ def test_fact_writes_for_one_episode_share_one_document(harness: Harness) -> Non
     assert "二" in harness.facts.writes[-1]["transcript"]
 
 
-def test_failed_store_write_is_retried_on_next_tick(harness: Harness) -> None:
+def test_failed_store_write_is_retried_after_backoff(harness: Harness) -> None:
     harness.chat([_u("我叫小鱼")])
     harness.chat([_u("我叫小鱼"), _a("好的"), _u("嗯")])
     harness.facts.fail = True
@@ -105,6 +105,7 @@ def test_failed_store_write_is_retried_on_next_tick(harness: Harness) -> None:
     assert harness.facts.writes == []
 
     harness.facts.fail = False
+    harness.clock.advance(seconds=31)  # 退避细节见 test_write_durability
     harness.tick()
 
     assert "我叫小鱼" in harness.facts.writes[-1]["transcript"]
@@ -118,6 +119,7 @@ def test_pending_writes_survive_a_gateway_restart(harness: Harness) -> None:
     harness.facts.fail = False
 
     harness.restart()
+    harness.clock.advance(seconds=31)
     harness.tick()
 
     assert "我叫小鱼" in harness.facts.writes[-1]["transcript"]

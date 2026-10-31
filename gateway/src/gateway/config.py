@@ -28,5 +28,9 @@ class Settings:
     # 后台循环:结束空闲的段、重试写入队列。测试关闭,改用 /admin/tick 手动推进
     background_worker: bool = True
     background_interval_seconds: float = 30.0
+    retry_base_seconds: float = 30.0   # 写入失败后第一次重试的等待,之后每次翻倍
+    retry_max_seconds: float = 3600.0  # 重试等待的上限
+    # 策划数据面板(/panel)的登录密码,不复用设备 Token;为空时面板不存在
+    panel_password: str = ""
     # 抓包开关:>0 时保留最近 N 次原始请求到 data_dir/debug(排查 Kelivo 实际发了什么)
     debug_capture: int = 0

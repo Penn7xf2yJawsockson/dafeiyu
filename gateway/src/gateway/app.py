@@ -7,6 +7,7 @@ import contextlib
 import hmac
 import json
 import logging
+import random
 import time
 from collections.abc import AsyncIterator
 from datetime import datetime
@@ -19,9 +20,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from gateway import anthropic
 from gateway import upstream as up
 from gateway.background import is_background, is_compress, is_client_context
-from gateway.compose import compose, local_time_line, render_recall_block, turn_start
+from gateway.compose import compose, local_time_line, render_recall_block, system_head, turn_start
 from gateway.config import Settings
+from gateway.curated import PERSONA, PROFILE, CuratedStore
 from gateway.lifecycle import Lifecycle, context_hash, message_text
+from gateway.lorebook import LoreSettings, Placement, activate, entries_of, place
+from gateway.panel import register_panel
 from gateway.recall import recall
 from gateway.stores import MemoryStore
 from gateway.transcript import FAILED, TranscriptLog
@@ -37,9 +41,24 @@ class Clock(Protocol):
     def now(self) -> datetime: ...
 
 
-def _read(settings: Settings, name: str) -> str:
-    path = settings.data_dir / name
-    return path.read_text(encoding="utf-8").strip() if path.exists() else ""
+SEND_MESSAGE_TOOL = "send_message"  # dsh-segmented-reply 插件注册的工具名
+
+
+def sent_messages(turn_messages: list[dict[str, Any]]) -> list[str]:
+    """本轮 send_message 调用发出的消息,按调用顺序。参数写坏的那次跳过。"""
+    out: list[str] = []
+    for m in turn_messages:
+        for call in m.get("tool_calls") or [] if m.get("role") == "assistant" else []:
+            fn = call.get("function") or {}
+            if fn.get("name") != SEND_MESSAGE_TOOL:
+                continue
+            try:
+                content = json.loads(fn.get("arguments") or "{}").get("content")
+            except (ValueError, AttributeError):
+                continue
+            if isinstance(content, str) and content.strip():
+                out.append(content.strip())
+    return out
 
 
 def _bearer(request: Request) -> str:
@@ -68,6 +87,22 @@ def create_app(
     clock: Clock,
 ) -> FastAPI:
     log = TranscriptLog(settings.data_dir / "transcript.sqlite3")
+    curated = CuratedStore(settings.data_dir, clock)
+    lore_defaults = LoreSettings()
+
+    def lore_for(history: list[dict[str, Any]], start: int, turn_id: str) -> Placement:
+        """网关世界书:扫描本轮用户这句话及之前的消息(不含工具回合与客户端注入的上下文),按条目的注入位置分配。
+        确定性注入,不经过召回超时,降级轮照样有(工单 09)。概率与互斥组用这一轮的 ID 做种子:同一轮的
+        工具回合重算结果相同,缓存前缀不变。读不了世界书时这一轮不注入,不影响回复。"""
+        try:
+            recent = [message_text(m.get("content")) for m in history[: start + 1]
+                      if m.get("role") in ("user", "assistant")]
+            settings_ = curated.lore_settings(lore_defaults)
+            rng = random.Random(turn_id)
+            return place(activate(entries_of(curated.worlds()), recent, settings_, rand=rng.random), settings_)
+        except Exception:
+            logger.exception("网关世界书匹配失败,本轮不注入")
+            return Placement()
     life = Lifecycle(settings, log, fact_store, affect_store, notice=DEGRADED_NOTICE)
     drain_lock = asyncio.Lock()
     direct_model = f"{settings.companion}-direct"  # 无记忆直通:给标题生成、酒馆、Agent 等用
@@ -83,7 +118,7 @@ def create_app(
     async def tick() -> None:
         async with drain_lock:
             life.sweep_idle(clock.now())
-            await life.drain()
+            await life.drain(clock.now())
 
     def tick_soon() -> None:
         """立刻在后台推进写入队列:刚确定的轮尽早写进事实库,下一轮就能查到。"""
@@ -95,6 +130,8 @@ def create_app(
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         task: asyncio.Task[None] | None = None
+        if found := life.reconcile():
+            logger.warning("启动对账:补入 %d 个漏掉的记忆写入任务", found)
         if settings.background_worker:
             async def loop() -> None:
                 while True:
@@ -110,6 +147,7 @@ def create_app(
         await client.aclose()
 
     app = FastAPI(title="dafeiyu-gateway", lifespan=lifespan)
+    register_panel(app, curated, settings.panel_password, lore_defaults, facts=fact_store)
 
     async def run_turn(device: str, body: dict[str, Any], incoming: dict[str, Any] | None = None) -> TurnResult:
         """一轮的完整处理。body 是 OpenAI Chat Completions 格式。
@@ -143,6 +181,7 @@ def create_app(
         superseded: str | None = None
         if turn is not None:
             block, reasons, memory_ids = log.saved_recall(turn.id)
+            lore = lore_for(history, start, turn.id)
         else:
             tool_round = False  # 找不到所属的一轮(比如中途重启):当作新的一轮,从那条用户消息开始
             superseded = life.resolve_previous(device, companion, history[: start + 1])
@@ -153,22 +192,27 @@ def create_app(
                                  user_text=message_text(history[start].get("content")))
             tick_soon()
             recalled = await recall(query=turn.user_text, facts=fact_store, affect=affect_store,
-                                    timeout=settings.recall_timeout_seconds, surface=first_turn, lore=[],
+                                    timeout=settings.recall_timeout_seconds, surface=first_turn,
                                     handoff=handoff)
             block = render_recall_block(recalled, local_time_line(now, settings.timezone))
-            reasons, memory_ids = recalled.degraded_reasons, recalled.memory_ids()
+            lore = lore_for(history, start, turn.id)
+            reasons = recalled.degraded_reasons
+            memory_ids = recalled.memory_ids() + [f"lore:{i}" for i in lore.ids]
             log.save_recall(turn.id, block, reasons, memory_ids)
 
-        system = "\n\n".join(p for p in (_read(settings, "persona.md"), _read(settings, "core_profile.md")) if p)
+        head = system_head(lore.fill_outlets(curated.text(PERSONA)), lore.fill_outlets(curated.text(PROFILE)),
+                           lore.before, lore.after)
+        segments = [head, client_system]
         payload = {**body, "model": settings.upstream_model,
-                   "messages": compose(system, client_system, full, block,
-                                       next(i for i, m in enumerate(full) if m is history[start]), DEGRADED_NOTICE)}
+                   "messages": compose(segments, full, block, next(i for i, m in enumerate(full) if m is history[start]),
+                                       DEGRADED_NOTICE, depth=lore.depth)}
         notice = DEGRADED_NOTICE if reasons else ""
         capture(incoming or {"body": body}, payload)
 
         async def finish(text: str, ok: bool, tools: list[str]) -> None:
             if ok and not tools:
-                log.complete_turn(turn.id, text)  # 最终回复
+                # DSH 分段回复插件:她说的话在本轮 send_message 的参数里,按顺序拼在最终回复前面
+                log.complete_turn(turn.id, "\n".join(p for p in (*sent_messages(history[start:]), text) if p))
             elif not ok and not tool_round:
                 log.complete_turn(turn.id, "")
                 log.set_status(turn.id, FAILED)

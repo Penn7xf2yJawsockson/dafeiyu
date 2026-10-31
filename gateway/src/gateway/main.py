@@ -46,6 +46,7 @@ def build() -> FastAPI:
         upstream_model=_env("UPSTREAM_MODEL", "deepseek-flash"),
         admin_token=_env("GATEWAY_ADMIN_TOKEN"),
         debug_capture=int(os.environ.get("GATEWAY_DEBUG_CAPTURE", "0") or "0"),
+        panel_password=os.environ.get("GATEWAY_PANEL_PASSWORD", ""),
     )
     clock = SystemClock()
     facts = HindsightStore(_env("HINDSIGHT_URL", "http://hindsight:8888"), _env("HINDSIGHT_BANK", "dafeiyu"),
