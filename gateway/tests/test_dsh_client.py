@@ -154,3 +154,21 @@ def test_a_user_who_types_system_reminder_mid_sentence_is_still_heard(harness: H
     harness.chat([SYSTEM, _u("你知道 <system-reminder> 是什么吗")])
 
     assert harness.turns()[0]["user_text"] == "你知道 <system-reminder> 是什么吗"
+
+
+def test_mood_plugin_judge_requests_never_become_turns(harness: Harness) -> None:
+    """dsh-feiyu-mood 每轮聊完让模型判断心情,只要 JSON。这不是对话,不召回、不进记忆。"""
+    harness.chat([SYSTEM, _u("我叫小鱼"), _time(1)])
+    judge = _u("**你这轮说的话（判据之一，重点看语气）：**\n好呀\n\n筱筱这轮说：\n在吗\n\n"
+               "请把「你怎么说的」和「筱筱说了什么」合起来判断你的心情变化，只输出 JSON。")
+
+    harness.chat([{"role": "system", "content": "你在判断自己的心情"}, judge])
+
+    [turn] = harness.turns()
+    assert turn["user_text"] == "我叫小鱼" and turn["status"] == "pending"
+    assert harness.facts.queries == ["我叫小鱼"]
+
+
+def test_user_mentioning_json_is_still_heard(harness: Harness) -> None:
+    harness.chat([_u("帮我把这段话改成只输出 JSON 的格式")])
+    assert len(harness.turns()) == 1
