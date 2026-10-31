@@ -147,7 +147,7 @@ def create_app(
         await client.aclose()
 
     app = FastAPI(title="dafeiyu-gateway", lifespan=lifespan)
-    register_panel(app, curated, settings.panel_password, lore_defaults)
+    register_panel(app, curated, settings.panel_password, lore_defaults, facts=fact_store)
 
     async def run_turn(device: str, body: dict[str, Any], incoming: dict[str, Any] | None = None) -> TurnResult:
         """一轮的完整处理。body 是 OpenAI Chat Completions 格式。

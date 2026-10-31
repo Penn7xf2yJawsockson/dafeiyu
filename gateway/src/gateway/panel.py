@@ -48,7 +48,9 @@ def _error(status: int, message: str) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 
 
-def register_panel(app: FastAPI, store: CuratedStore, password: str, lore_defaults: LoreSettings) -> None:
+def register_panel(app: FastAPI, store: CuratedStore, password: str, lore_defaults: LoreSettings,
+                   facts: Any = None) -> None:
+    """facts:事实库适配器;有 list_memories / set_memory_state 时面板提供记忆的批量管理。"""
     if not password:
         return
 
@@ -165,6 +167,51 @@ def register_panel(app: FastAPI, store: CuratedStore, password: str, lore_defaul
             return JSONResponse({"ok": True, "version": store.rollback(_path(kind, name), id)})
         except CuratedError as exc:
             return _error(400, str(exc))
+
+    def _curatable() -> bool:
+        return facts is not None and hasattr(facts, "list_memories") and hasattr(facts, "set_memory_state")
+
+    @app.get("/panel/api/memories")
+    async def list_memories(request: Request, q: str = "", type: str = "", state: str = "valid",
+                            limit: int = 50, offset: int = 0) -> Response:
+        """事实库(Hindsight)的记忆,分页。观察(observation)由原始事实合并而来,只能看,不能单独失效。"""
+        if err := guard(request):
+            return err
+        if not _curatable():
+            return _error(404, "事实库不支持在面板里管理")
+        if state not in ("valid", "invalidated") or type not in ("", "world", "experience", "observation"):
+            return _error(400, "筛选条件不合法")
+        try:
+            page = await facts.list_memories(q=q.strip(), fact_type=type, state=state,
+                                             limit=max(1, min(limit, 200)), offset=max(0, offset))
+        except Exception as exc:  # 记忆库挂了不影响面板其他功能
+            return _error(502, f"读不到事实库:{exc}")
+        items = [{"id": m.get("id"), "text": m.get("text", ""), "type": m.get("fact_type"),
+                  "date": m.get("mentioned_at") or m.get("date"), "state": m.get("state"),
+                  "reason": m.get("invalidation_reason")} for m in page.get("items", [])]
+        return JSONResponse({"items": items, "total": page.get("total", len(items))})
+
+    @app.post("/panel/api/memories/state")
+    async def set_memories_state(request: Request) -> Response:
+        """批量失效 / 恢复。逐条调用 Hindsight,失败的单独列出(例如观察不能直接改)。"""
+        if err := guard(request, mutating=True):
+            return err
+        if not _curatable():
+            return _error(404, "事实库不支持在面板里管理")
+        body = await request.json()
+        ids = [str(i) for i in body.get("ids", []) if str(i).strip()][:500]
+        state = body.get("state")
+        if state not in ("valid", "invalidated") or not ids:
+            return _error(400, "需要 ids 和 state(valid / invalidated)")
+        reason = str(body.get("reason") or "面板批量操作")[:200]
+        done, failed = [], []
+        for memory_id in ids:
+            try:
+                await facts.set_memory_state(memory_id, state, reason)
+                done.append(memory_id)
+            except Exception as exc:
+                failed.append({"id": memory_id, "error": str(exc)[:200]})
+        return JSONResponse({"ok": not failed, "done": done, "failed": failed})
 
     @app.post("/panel/api/lore-test")
     async def lore_test(request: Request) -> Response:

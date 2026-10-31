@@ -54,6 +54,7 @@ dialog { border:1px solid var(--line); border-radius:8px; background:var(--card)
   <button class="tab" data-tab="worlds">世界书</button>
   <button class="tab" data-tab="settings">全局激活设置</button>
   <button class="tab" data-tab="test">注入预览</button>
+  <button class="tab" data-tab="memories">事实记忆</button>
   <span class="sp"></span>
   <button id="logoutBtn">退出</button>
 </header>
@@ -155,6 +156,27 @@ dialog { border:1px solid var(--line); border-radius:8px; background:var(--card)
     <div class="row"><button class="primary" id="testRun">预览</button></div>
     <div id="testOut"></div>
   </div></section>
+  <section id="tab-memories" class="hidden"><div class="card">
+    <div class="row"><b>事实记忆(Hindsight)</b>
+      <span class="muted">「失效」= 不再被召回,但保留着,随时能恢复。观察(observation)由原始事实合并而来,不能单独失效:把它背后的事实失效,它会自动重新生成。</span></div>
+    <div class="row">
+      <select id="memState"><option value="valid">有效的</option><option value="invalidated">已失效的</option></select>
+      <select id="memType"><option value="">全部类型</option><option value="world">世界事实</option><option value="experience">经历</option><option value="observation">观察(只读)</option></select>
+      <input id="memQ" placeholder="搜索文字" style="flex:1;min-width:160px">
+      <select id="memLimit"><option>50</option><option>100</option><option>200</option></select>
+      <button id="memSearch">查询</button>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="memAll"> 全选本页</label>
+      <span id="memCount" class="muted"></span>
+      <span style="flex:1"></span>
+      <button class="danger" id="memInvalidate" disabled>失效选中</button>
+      <button id="memRestore" disabled class="hidden">恢复选中</button>
+    </div>
+    <table><thead><tr><th style="width:28px"></th><th>内容</th><th style="width:72px">类型</th><th style="width:150px">时间</th></tr></thead>
+      <tbody id="memRows"></tbody></table>
+    <div class="row"><button id="memPrev">上一页</button><span id="memPage" class="muted"></span><button id="memNext">下一页</button></div>
+  </div></section>
 </main>
 </div>
 
@@ -212,7 +234,7 @@ document.querySelectorAll("button.tab").forEach((b) => b.onclick = () => openTab
 async function openTab(tab) {
   current.tab = tab;
   document.querySelectorAll("button.tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
-  for (const s of ["doc", "worlds", "settings", "test"]) $("tab-" + s).classList.add("hidden");
+  for (const s of ["doc", "worlds", "settings", "test", "memories"]) $("tab-" + s).classList.add("hidden");
   if (tab in DOCS) {
     $("tab-doc").classList.remove("hidden");
     $("docTitle").textContent = DOCS[tab][0]; $("docHint").textContent = DOCS[tab][1];
@@ -221,6 +243,7 @@ async function openTab(tab) {
     $("tab-" + tab).classList.remove("hidden");
     if (tab === "worlds") await loadWorlds();
     if (tab === "settings") await loadSettings();
+    if (tab === "memories") await loadMemories(0);
   }
 }
 $("docSave").onclick = async () => {
@@ -405,6 +428,66 @@ $("testRun").onclick = async () => {
     el("div", { className: "row" }, el("b", { text: e.comment || e.id }), el("span", { className: "muted", text: e.id + " · " + e.where + (e.constant ? " · 常驻" : "") })),
     el("pre", { text: e.text })));
 };
+
+// ---------- 事实记忆 ----------
+const MEM_TYPES = { world: "世界事实", experience: "经历", observation: "观察" };
+let mem = { offset: 0, total: 0, items: [], picked: new Set() };
+async function loadMemories(offset) {
+  const limit = Number($("memLimit").value);
+  const params = { state: $("memState").value, type: $("memType").value, q: $("memQ").value.trim(), limit, offset };
+  const rows = $("memRows"); rows.replaceChildren(el("tr", {}, el("td", { colSpan: 4, className: "muted", text: "加载中…" })));
+  let r;
+  try { r = await api("GET", "memories?" + q(params)); }
+  catch (e) { rows.replaceChildren(el("tr", {}, el("td", { colSpan: 4, text: e.message }))); return; }
+  mem = { offset, total: r.total, items: r.items, picked: new Set() };
+  rows.replaceChildren();
+  for (const m of r.items) {
+    const readOnly = m.type === "observation";
+    const cb = el("input", { type: "checkbox", disabled: readOnly, title: readOnly ? "观察不能单独失效" : "",
+      on: { change: () => { cb.checked ? mem.picked.add(m.id) : mem.picked.delete(m.id); syncMemButtons(); } } });
+    rows.append(el("tr", { className: readOnly ? "off" : "", on: { click: (e) => { if (e.target !== cb && !readOnly) { cb.checked = !cb.checked; cb.dispatchEvent(new Event("change")); } } } },
+      el("td", {}, cb), el("td", { text: m.text + (m.reason ? "(原因:" + m.reason + ")" : "") }),
+      el("td", { text: MEM_TYPES[m.type] || m.type || "" }), el("td", { className: "muted", text: m.date ? new Date(m.date).toLocaleString() : "" })));
+  }
+  if (!r.items.length) rows.append(el("tr", {}, el("td", { colSpan: 4, className: "muted", text: "没有记忆" })));
+  const pages = Math.max(1, Math.ceil(r.total / limit));
+  $("memPage").textContent = "第 " + (Math.floor(offset / limit) + 1) + " / " + pages + " 页,共 " + r.total + " 条";
+  $("memPrev").disabled = offset === 0; $("memNext").disabled = offset + limit >= r.total;
+  const invalidated = params.state === "invalidated";
+  $("memInvalidate").classList.toggle("hidden", invalidated); $("memRestore").classList.toggle("hidden", !invalidated);
+  $("memAll").checked = false; syncMemButtons();
+}
+function syncMemButtons() {
+  const n = mem.picked.size;
+  $("memCount").textContent = n ? "已选 " + n + " 条" : "";
+  $("memInvalidate").disabled = $("memRestore").disabled = n === 0;
+  const selectable = mem.items.filter((m) => m.type !== "observation").length;
+  $("memAll").checked = n > 0 && n === selectable;
+}
+$("memAll").onchange = () => {
+  document.querySelectorAll("#memRows input[type=checkbox]:not(:disabled)").forEach((cb) => { cb.checked = $("memAll").checked; });
+  mem.picked = new Set($("memAll").checked ? mem.items.filter((m) => m.type !== "observation").map((m) => m.id) : []);
+  syncMemButtons();
+};
+async function changeMemories(state) {
+  const ids = [...mem.picked];
+  const verb = state === "invalidated" ? "失效" : "恢复";
+  if (!ids.length || !confirm(verb + "选中的 " + ids.length + " 条记忆?" + (state === "invalidated" ? "(之后可以在「已失效的」里恢复)" : ""))) return;
+  $("memInvalidate").disabled = $("memRestore").disabled = true;
+  $("memCount").textContent = "处理中…";
+  try {
+    const r = await api("POST", "memories/state", { ids, state });
+    toast(verb + "了 " + r.done.length + " 条" + (r.failed.length ? ",失败 " + r.failed.length + " 条:" + r.failed[0].error : ""));
+  } catch (e) { toast(e.message); }
+  await loadMemories(mem.offset >= mem.total - ids.length && mem.offset > 0 ? Math.max(0, mem.offset - Number($("memLimit").value)) : mem.offset);
+}
+$("memInvalidate").onclick = () => changeMemories("invalidated");
+$("memRestore").onclick = () => changeMemories("valid");
+$("memSearch").onclick = () => loadMemories(0);
+$("memQ").addEventListener("keydown", (e) => { if (e.key === "Enter") loadMemories(0); });
+for (const id of ["memState", "memType", "memLimit"]) $(id).onchange = () => loadMemories(0);
+$("memPrev").onclick = () => loadMemories(Math.max(0, mem.offset - Number($("memLimit").value)));
+$("memNext").onclick = () => loadMemories(mem.offset + Number($("memLimit").value));
 
 // ---------- 历史版本 ----------
 let hist = null;
